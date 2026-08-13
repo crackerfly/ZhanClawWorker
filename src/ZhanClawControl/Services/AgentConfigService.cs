@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 
 namespace ZhanClawControl.Services;
 
@@ -11,10 +12,15 @@ namespace ZhanClawControl.Services;
 /// </summary>
 public sealed class AgentConfigService
 {
+    // 必须显式指定 TypeInfoResolver：
+    // JsonNode.ToJsonString 写出 JsonValue<T> 节点时要从 options 取 JsonTypeInfo<T>，
+    // 而手工 new 出来的 JsonSerializerOptions 的 TypeInfoResolver 为 null，会抛
+    // "JsonSerializerOptions instance must specify a TypeInfoResolver setting"。
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
         WriteIndented = true,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
 
     public bool Exists => File.Exists(AppPaths.ConfigFile);

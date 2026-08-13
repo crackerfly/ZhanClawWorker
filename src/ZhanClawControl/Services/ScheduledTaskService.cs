@@ -146,6 +146,9 @@ public sealed class ScheduledTaskService
     /// <summary>
     /// 任务执行的是 run-agent.cmd 而不是 p2p-agent.exe 本身，
     /// 目的是把 stdout/stderr 重定向到 logs\agent.log —— 官方安装脚本直接执行 exe，没有日志留存。
+    ///
+    /// 注意：taskSettingsType 的子元素顺序由 XSD 的 sequence 约束，
+    /// 顺序不对会被 schtasks /XML 拒绝，因此下面的 Settings 严格按 schema 顺序排列。
     /// </summary>
     private static string BuildTaskXml(string runAsUser)
     {
@@ -177,29 +180,29 @@ public sealed class ScheduledTaskService
     </Principal>
   </Principals>
   <Settings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
     <IdleSettings>
       <StopOnIdleEnd>false</StopOnIdleEnd>
       <RestartOnIdle>false</RestartOnIdle>
     </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
     <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
-    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>

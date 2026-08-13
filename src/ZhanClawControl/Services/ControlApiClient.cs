@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace ZhanClawControl.Services;
 
@@ -28,6 +29,13 @@ public sealed record PeerEntry(
 /// </summary>
 public sealed class ControlApiClient : IDisposable
 {
+    private static readonly JsonSerializerOptions PrettyOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
+
     private readonly HttpClient _http;
 
     public ControlApiClient()
@@ -261,11 +269,7 @@ public sealed class ControlApiClient : IDisposable
         try
         {
             using var doc = JsonDocument.Parse(json);
-            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-            });
+            return JsonSerializer.Serialize(doc.RootElement, PrettyOptions);
         }
         catch
         {

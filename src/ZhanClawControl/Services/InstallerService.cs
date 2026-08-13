@@ -258,7 +258,11 @@ public sealed class InstallerService
             {
                 using var client = new ControlApiClient();
                 var info = await client.GetInfoAsync(ct).ConfigureAwait(false);
-                if (info is not null && info.PeerId.Length > 0)
+
+                // 判定标准是「本机 API 能正常应答」，而不是「能解析出 PeerID」。
+                // /v1/info 的字段名未在上游文档中固定，若解析不到 PeerID 也只是界面显示为空，
+                // 不应据此判定 Agent 没起来。
+                if (info is not null)
                 {
                     return true;
                 }
