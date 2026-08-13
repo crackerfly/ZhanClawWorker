@@ -1,0 +1,107 @@
+<UserControl x:Class="ZhanClawControl.Views.AuthorizationView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="28,24">
+        <StackPanel>
+
+            <TextBlock Text="授权管理" Style="{StaticResource PageTitle}" Margin="0,0,0,4" />
+            <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,18"
+                       Text="只有列在这里的主控设备才能向本机提交任务。这是被控端唯一的远端授权边界。" />
+
+            <!-- 重要说明 -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                               Foreground="{DynamicResource BrandBrush}" VerticalAlignment="Top" Margin="0,2,12,0" />
+                    <StackPanel>
+                        <TextBlock Text="授权与执行确认是两件事" FontWeight="SemiBold" />
+                        <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0"
+                                   Text="这里的白名单只决定「哪台设备可以发命令」，不代表你已批准某一次具体操作。远端可执行的 PowerShell 拥有本机 Agent 账户的完整权限，请只授权你确实信任的设备。" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- 添加 -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="添加主控设备" Style="{StaticResource SectionTitle}" />
+
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" Text="{Binding NewPeerId, UpdateSourceTrigger=PropertyChanged}"
+                                 FontFamily="Consolas, Cascadia Mono, Courier New" />
+                        <Button Grid.Column="1" Content="粘贴" MinWidth="72" Margin="8,0,0,0"
+                                Command="{Binding PasteCommand}" />
+                    </Grid>
+
+                    <TextBlock Text="{Binding NewPeerIdHint}" Style="{StaticResource CaptionText}" Margin="0,0,0,12" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" Text="{Binding NewNote, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="1" Content="添加" Style="{StaticResource AccentButton}"
+                                MinWidth="88" Margin="8,0,0,0" Command="{Binding AddCommand}" />
+                    </Grid>
+                    <TextBlock Text="备注名（可选，仅本机显示，不会写入 Agent 配置）"
+                               Style="{StaticResource CaptionText}" Margin="0,6,0,0" />
+                </StackPanel>
+            </Border>
+
+            <!-- 列表 -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <Grid Margin="0,0,0,10">
+                        <TextBlock Text="已授权设备" Style="{StaticResource SectionTitle}" Margin="0" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="撤销所选" Command="{Binding RemoveCommand}" Margin="0,0,8,0" />
+                            <Button Content="保存并生效" Style="{StaticResource AccentButton}"
+                                    Command="{Binding SaveCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Background="{DynamicResource BrandSubtleBrush}" CornerRadius="6" Padding="12,10"
+                            Margin="0,0,0,10"
+                            Visibility="{Binding PendingRestart, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Style="{StaticResource CaptionText}"
+                                   Text="有未保存的更改。allowed_peers 是静态配置，保存后需要重启 Agent 才会生效。" />
+                    </Border>
+
+                    <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,10"
+                               Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}"
+                               Text="列表为空：本机当前拒绝所有远端操作。" />
+
+                    <DataGrid ItemsSource="{Binding Peers}" SelectedItem="{Binding Selected, Mode=TwoWay}"
+                              MaxHeight="300">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="备注" Binding="{Binding Note}" Width="180" />
+                            <DataGridTextColumn Header="PeerID" Binding="{Binding ShortPeerId}" Width="*" />
+                            <DataGridTextColumn Header="连接状态" Binding="{Binding OnlineText}" Width="100" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </StackPanel>
+            </Border>
+
+            <!-- 紧急控制 -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="紧急控制" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,12"
+                               Text="断开后本机立即拒绝所有远端任务；设备身份与配置保留，可随时恢复。正在执行中的任务会被中断，且已产生的副作用不会回滚。" />
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="断开全部授权" Style="{StaticResource DangerButton}"
+                                MinWidth="130" Command="{Binding RevokeAllCommand}" Margin="0,0,8,0" />
+                        <Button Content="恢复上次授权" Command="{Binding RestoreBackupCommand}" MinWidth="130" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

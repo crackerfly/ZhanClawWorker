@@ -1,0 +1,124 @@
+<UserControl x:Class="ZhanClawControl.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="28,24">
+        <StackPanel>
+
+            <TextBlock Text="设置" Style="{StaticResource PageTitle}" Margin="0,0,0,4" />
+            <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,18"
+                       Text="Agent 在启动时读取配置，修改后需要重启才会生效。" />
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="设备标识" Style="{StaticResource SectionTitle}" />
+
+                    <TextBlock Text="设备名称" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding AgentName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
+
+                    <TextBlock Text="标签（逗号分隔，供主控端筛选设备）" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding AgentTags, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="网络" Style="{StaticResource SectionTitle}" />
+
+                    <TextBlock Text="Bootstrap 地址（每行一个 multiaddr）" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding BootstrapAddrs, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True" TextWrapping="NoWrap" Height="76"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             VerticalContentAlignment="Top" FontFamily="Consolas, Cascadia Mono, Courier New"
+                             FontSize="12" Margin="0,0,0,12" />
+
+                    <TextBlock Text="发现组（协作节点必须一致）" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding RendezvousGroup, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="资源限制" Style="{StaticResource SectionTitle}" />
+
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="120" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="并行任务上限" VerticalAlignment="Center" />
+                        <TextBox Grid.Column="1" Text="{Binding MaxParallelTasks, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Column="2" Text="范围 1–64；同时限制命令执行与接收端文件流"
+                                   Style="{StaticResource CaptionText}" VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="120" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="单文件传输上限（MiB）" VerticalAlignment="Center" />
+                        <TextBox Grid.Column="1" Text="{Binding MaxTransferMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Grid.Column="2" Text="限制网络文件流与 URL 下载"
+                                   Style="{StaticResource CaptionText}" VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="行为" Style="{StaticResource SectionTitle}" />
+                    <CheckBox Content="开机登录后自动启动 Agent" IsChecked="{Binding AutoStart}" Margin="0,0,0,10" />
+                    <CheckBox Content="关闭窗口时最小化到系统托盘（不停止 Agent）" IsChecked="{Binding MinimizeToTray}" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="安装信息" Style="{StaticResource SectionTitle}" />
+
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Agent 版本" Style="{StaticResource CaptionText}" />
+                        <TextBlock Grid.Column="1" Text="{Binding InstalledVersionText}" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="程序目录" Style="{StaticResource CaptionText}" />
+                        <TextBlock Grid.Column="1" Text="{Binding InstallRootText}" />
+                    </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="数据目录" Style="{StaticResource CaptionText}" />
+                        <TextBlock Grid.Column="1" Text="{Binding DataRootText}" />
+                    </Grid>
+
+                    <TextBlock Style="{StaticResource CaptionText}" Margin="0,12,0,0"
+                               Text="设备私钥、私网密钥与本机 API Token 保存在数据目录中，本程序不会显示、复制或导出它们。" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,20">
+                <Button Content="保存配置" Style="{StaticResource AccentButton}"
+                        Command="{Binding SaveCommand}" Margin="0,0,8,0" />
+                <Button Content="重新读取" Command="{Binding ReloadCommand}" Margin="0,0,8,0" />
+                <Button Content="卸载被控端" Style="{StaticResource DangerButton}"
+                        Command="{Binding UninstallCommand}" MinWidth="110" />
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

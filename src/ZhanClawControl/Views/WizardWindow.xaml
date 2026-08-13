@@ -1,0 +1,189 @@
+<Window x:Class="ZhanClawControl.Views.WizardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:svc="clr-namespace:ZhanClawControl.Services"
+        Title="{x:Static svc:AppInfo.WizardTitle}"
+        Height="640" Width="800"
+        MinHeight="580" MinWidth="720"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 头部 -->
+        <Border Grid.Row="0" Background="{DynamicResource BrandBrush}" Padding="28,22">
+            <StackPanel>
+                <TextBlock Text="{x:Static svc:AppInfo.ProductName}" FontSize="20" FontWeight="SemiBold"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource OnBrandBrush}" />
+                <TextBlock Text="把这台电脑配置为 P2P 被控端" FontSize="13" Opacity="0.9"
+                           Foreground="{DynamicResource OnBrandBrush}" Margin="0,4,0,0" />
+            </StackPanel>
+        </Border>
+
+        <!-- 内容 -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="28,24">
+            <StackPanel>
+                <TextBlock Text="{Binding StepTitle}" Style="{StaticResource PageTitle}" Margin="0,0,0,4" />
+                <TextBlock Text="{Binding StepCaption}" Style="{StaticResource CaptionText}" Margin="0,0,0,20" />
+
+                <!-- 步骤 0：本机信息 -->
+                <StackPanel Visibility="{Binding IsStep0, Converter={StaticResource BoolToVisibility}}">
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="设备名称" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding AgentName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" />
+
+                            <TextBlock Text="标签（逗号分隔，供主控端筛选设备）" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding AgentTags, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="私有网络密钥（swarm.key）" Style="{StaticResource SectionTitle}" />
+                            <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,10"
+                                       Text="所有协作设备必须使用同一份 swarm.key。这是网络准入密钥，不代表远程执行授权。" />
+
+                            <!-- 安装包内置时：只显示一行确认 -->
+                            <StackPanel Orientation="Horizontal"
+                                        Visibility="{Binding HasEmbeddedSwarmKey, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                           Foreground="{DynamicResource SuccessBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <TextBlock Text="{Binding SwarmKeyStatus}" VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <!-- 未内置时：要求手动选择 -->
+                            <StackPanel Visibility="{Binding NeedsSwarmKeySelection, Converter={StaticResource BoolToVisibility}}">
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0" Text="{Binding SwarmKeyPath, UpdateSourceTrigger=PropertyChanged}" />
+                                    <Button Grid.Column="1" Content="浏览…" MinWidth="80" Margin="8,0,0,0"
+                                            Command="{Binding BrowseSwarmKeyCommand}" />
+                                </Grid>
+                                <TextBlock Text="{Binding SwarmKeyStatus}" Style="{StaticResource CaptionText}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="运行账户" Style="{StaticResource SectionTitle}" />
+                            <TextBlock Style="{StaticResource CaptionText}" Margin="0,0,0,10"
+                                       Text="Agent 将以该账户运行，远端 PowerShell、文件访问和网络凭据都继承此账户的权限。如果你是用其他管理员账户提权启动本程序，请改成实际使用这台电脑的账户。" />
+                            <TextBox Text="{Binding RunAsUser, UpdateSourceTrigger=PropertyChanged}"
+                                     FontFamily="Consolas, Cascadia Mono, Courier New" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- 步骤 1：授权 -->
+                <StackPanel Visibility="{Binding IsStep1, Converter={StaticResource BoolToVisibility}}">
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="主控端 PeerID" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Text="{Binding ControllerPeerId, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="Consolas, Cascadia Mono, Courier New" />
+                                <Button Grid.Column="1" Content="粘贴" MinWidth="72" Margin="8,0,0,0"
+                                        Command="{Binding PastePeerIdCommand}" />
+                            </Grid>
+                            <TextBlock Text="{Binding PeerIdHint}" Style="{StaticResource CaptionText}" Margin="0,0,0,12" />
+
+                            <TextBlock Text="备注名（可选，仅本机显示）" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding ControllerNote, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                                       Foreground="{DynamicResource BrandBrush}" VerticalAlignment="Top" Margin="0,2,12,0" />
+                            <StackPanel>
+                                <TextBlock Text="授权意味着什么" FontWeight="SemiBold" />
+                                <TextBlock Style="{StaticResource CaptionText}" Margin="0,4,0,0"
+                                           Text="被授权的主控设备可以读取本机文件、传输文件，并以上一步指定的运行账户执行 PowerShell。请只填写你确实信任的设备。安装后可随时在「授权管理」中增删。" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="安全选项" Style="{StaticResource SectionTitle}" />
+                            <CheckBox IsChecked="{Binding HardenAcl}"
+                                      Content="收紧数据目录权限（推荐：仅当前用户、管理员和 SYSTEM 可访问）" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- 步骤 2：安装 -->
+                <StackPanel Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibility}}">
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="安装进度" Style="{StaticResource SectionTitle}" />
+                            <ItemsControl ItemsSource="{Binding Steps}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="26" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                       VerticalAlignment="Top" Margin="0,2,0,0"
+                                                       Text="{Binding Success, Converter={StaticResource StepGlyph}}"
+                                                       Foreground="{Binding Success, Converter={StaticResource BoolToStatusBrush}}" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding Detail}" Style="{StaticResource CaptionText}"
+                                                           Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock Style="{StaticResource CaptionText}" Margin="0,6,0,0"
+                                       Visibility="{Binding Installing, Converter={StaticResource BoolToVisibility}}"
+                                       Text="正在安装，请勿关闭窗口…" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部按钮 -->
+        <Border Grid.Row="2" Background="{DynamicResource SurfaceAltBrush}"
+                BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,1,0,0" Padding="28,16">
+            <Grid>
+                <Button Content="上一步" HorizontalAlignment="Left" Command="{Binding BackCommand}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="下一步" Style="{StaticResource AccentButton}"
+                            Command="{Binding NextCommand}" Margin="0,0,8,0"
+                            Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                    <Button Content="开始安装" Style="{StaticResource AccentButton}"
+                            Command="{Binding InstallCommand}" Margin="0,0,8,0" MinWidth="110"
+                            Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibility}}" />
+                    <Button Content="完成" Command="{Binding FinishCommand}" MinWidth="88"
+                            Visibility="{Binding Finished, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

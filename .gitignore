@@ -1,0 +1,19 @@
+# .NET
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+.vs/
+
+# 运行态机密
+# 注意：runtime/swarm.key 需要入库（安装包内置，用户免选）。
+# 因此本仓库必须保持 Private —— 见 runtime/README.md。
+runtime/agent-identity.key
+runtime/agent-api.token
+*.token
+agent-command-journal.jsonl
+
+# 系统
+Thumbs.db
+.DS_Store

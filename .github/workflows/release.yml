@@ -1,0 +1,166 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（例如 1.0.0），手动触发时使用'
+        required: true
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+
+    env:
+      # 未在仓库 Secrets 中配置时为空字符串，下方注入步骤会自动跳过
+      SWARM_KEY_B64: ${{ secrets.SWARM_KEY_B64 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          } else {
+            $version = '${{ github.event.inputs.version }}'
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = '1.0.0' }
+
+          # AssemblyVersion 只接受四段数字，剥掉预发布后缀
+          $numeric = ($version -split '-')[0]
+          if ($numeric -notmatch '^\d+(\.\d+){0,3}$') {
+            Write-Error "版本号格式无效：$version"
+            exit 1
+          }
+          while (($numeric -split '\.').Count -lt 3) { $numeric = "$numeric.0" }
+
+          "version=$version"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "numeric=$numeric"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "fileversion=$numeric.0"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "版本：$version（程序集 $numeric.0）"
+
+      - name: Verify agent payload present
+        shell: pwsh
+        run: |
+          $agent = 'runtime/p2p-agent.exe'
+          if (-not (Test-Path $agent)) {
+            Write-Error "缺少 $agent。请把发行包中的 p2p-agent.exe 提交到仓库 runtime 目录。"
+            exit 1
+          }
+
+      # swarm.key 优先取仓库内的 runtime/swarm.key；
+      # 仓库内没有但配置了 SWARM_KEY_B64 Secret 时，从 Secret 写出到同一路径。
+      - name: Inject swarm.key from secret (fallback)
+        if: env.SWARM_KEY_B64 != ''
+        shell: pwsh
+        run: |
+          if (Test-Path 'runtime/swarm.key') {
+            Write-Host '仓库已包含 runtime/swarm.key，忽略 Secret。'
+          } else {
+            [IO.File]::WriteAllBytes(
+              'runtime/swarm.key',
+              [Convert]::FromBase64String($env:SWARM_KEY_B64))
+            Write-Host '已从 Secret 写出 runtime/swarm.key'
+          }
+
+      - name: Confirm swarm.key embedded
+        shell: pwsh
+        run: |
+          if (Test-Path 'runtime/swarm.key') {
+            Write-Host 'swarm.key 将内置进安装包：安装向导免选。'
+          } else {
+            Write-Warning '未找到 swarm.key：发布的安装包将要求用户手动选择该文件。'
+          }
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish src/ZhanClawControl/ZhanClawControl.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:AssemblyVersion=${{ steps.version.outputs.fileversion }} `
+            -p:FileVersion=${{ steps.version.outputs.fileversion }} `
+            --output artifacts/publish
+
+      # 产物文件名使用纯 ASCII，避免中文在下载 URL 中被百分号编码、
+      # 以及部分下载工具与命令行环境处理非 ASCII 文件名时出错。
+      # Release 标题与说明仍为中文。
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $stage = 'artifacts/stage'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $baseName = "ZhanClawWorker-$version-win-x64"
+          $exeName  = "$baseName.exe"
+          $zipName  = "$baseName.zip"
+
+          Copy-Item 'artifacts/publish/ZhanClawControl.exe' (Join-Path $stage $exeName)
+
+          if (Test-Path 'README.md') {
+            Copy-Item 'README.md' (Join-Path $stage 'README.md')
+          }
+
+          Compress-Archive `
+            -Path (Join-Path $stage '*') `
+            -DestinationPath "artifacts/$zipName" `
+            -Force
+
+          Copy-Item (Join-Path $stage $exeName) 'artifacts/'
+
+          Get-FileHash -Algorithm SHA256 -Path "artifacts/$exeName", "artifacts/$zipName" |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Path 'artifacts/SHA256SUMS.txt' -Encoding utf8
+
+          Get-Content 'artifacts/SHA256SUMS.txt'
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 战Claw多电脑聚控智能被控端 ${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.version.outputs.version) }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
+          body: |
+            ## 战Claw多电脑聚控智能被控端 ${{ steps.version.outputs.version }}
+
+            Windows x64 被控端管理程序。下载 `ZhanClawWorker-${{ steps.version.outputs.version }}-win-x64.exe` 后**右键以管理员身份运行**即可，无需安装 .NET 运行时。
+
+            首次运行会进入安装向导，完成后可在托盘常驻。
+
+            > 产物文件名为 ASCII（`ZhanClawWorker-*`），便于命令行下载与脚本化分发；程序界面与安装后的显示名称仍为「战Claw多电脑聚控智能被控端」。
+
+            ### 校验
+            下载后请核对 `SHA256SUMS.txt` 中的哈希值。
+
+            ### 注意
+            - 安装需要管理员权限（写入 `C:\Program Files\P2PAgent` 与 `C:\ProgramData\P2PAgent`、注册开机任务）。
+            - 安装完成后 `allowed_peers` 若为空，本机将拒绝所有远端任务，这是安全的默认状态。

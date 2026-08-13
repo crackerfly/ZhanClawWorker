@@ -1,0 +1,32 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 品牌色（浅色主题使用原始品牌色） -->
+    <SolidColorBrush x:Key="BrandBrush" Color="#024AD8" />
+    <SolidColorBrush x:Key="BrandHoverBrush" Color="#0A57E8" />
+    <SolidColorBrush x:Key="BrandPressedBrush" Color="#013CB0" />
+    <SolidColorBrush x:Key="BrandSubtleBrush" Color="#E8EFFC" />
+    <SolidColorBrush x:Key="OnBrandBrush" Color="#FFFFFF" />
+
+    <!-- Windows 原生浅色语义 -->
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#F3F3F3" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FAFAFA" />
+    <SolidColorBrush x:Key="NavBackgroundBrush" Color="#EDEDED" />
+    <SolidColorBrush x:Key="BorderSubtleBrush" Color="#E5E5E5" />
+    <SolidColorBrush x:Key="BorderStrongBrush" Color="#CFCFCF" />
+
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#1B1B1B" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#5D5D5D" />
+    <SolidColorBrush x:Key="TextDisabledBrush" Color="#9D9D9D" />
+
+    <SolidColorBrush x:Key="SuccessBrush" Color="#0F7B0F" />
+    <SolidColorBrush x:Key="WarningBrush" Color="#9D5D00" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#C42B1C" />
+    <SolidColorBrush x:Key="DangerHoverBrush" Color="#D13A2B" />
+
+    <SolidColorBrush x:Key="ControlBackgroundBrush" Color="#FBFBFB" />
+    <SolidColorBrush x:Key="ControlHoverBrush" Color="#F0F0F0" />
+    <SolidColorBrush x:Key="ControlPressedBrush" Color="#E4E4E4" />
+
+</ResourceDictionary>

@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ZhanClawControl</RootNamespace>
+    <AssemblyName>ZhanClawControl</AssemblyName>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Product>战Claw多电脑聚控智能被控端</Product>
+    <AssemblyTitle>战Claw多电脑聚控智能被控端</AssemblyTitle>
+    <Company>StarSoftComm</Company>
+    <Description>战Claw 多电脑聚控 P2P 被控端管理程序</Description>
+    <Copyright>Copyright © StarSoftComm</Copyright>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+  </PropertyGroup>
+
+  <!--
+    p2p-agent.exe 由仓库直接携带（runtime/p2p-agent.exe），以嵌入资源方式打进单文件 EXE，
+    安装向导运行时释放到 C:\Program Files\P2PAgent。
+    构建时如果文件缺失会直接失败，避免产出一个装不了 Agent 的安装器。
+  -->
+  <Target Name="EnsureAgentBinary" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\p2p-agent.exe')"
+           Text="缺少 runtime\p2p-agent.exe。请把发行包中的 p2p-agent.exe 放到仓库 runtime 目录后再构建。" />
+    <Warning Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')"
+             Text="缺少 runtime\swarm.key，安装包不会内置私网密钥，安装向导将要求用户手动选择文件。" />
+    <Message Condition="Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')"
+             Importance="high"
+             Text="已检测到 runtime\swarm.key，将内置进安装包（用户免选）。" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\runtime\p2p-agent.exe">
+      <LogicalName>ZhanClawControl.payload.p2p-agent.exe</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!--
+    swarm.key 是私网准入密钥，内置进安装包以便用户免选。
+    优先来源：仓库 runtime\swarm.key（入库）；CI 也可从 SWARM_KEY_B64 Secret 写出同一路径。
+    两者都缺失时安装向导会退回为手动选择文件。
+  -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')">
+    <EmbeddedResource Include="..\..\runtime\swarm.key">
+      <LogicalName>ZhanClawControl.payload.swarm.key</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+</Project>

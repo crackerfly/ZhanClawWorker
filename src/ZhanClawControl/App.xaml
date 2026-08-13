@@ -1,0 +1,39 @@
+<Application x:Class="ZhanClawControl.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:ZhanClawControl.ViewModels"
+             xmlns:views="clr-namespace:ZhanClawControl.Views"
+             xmlns:infra="clr-namespace:ZhanClawControl.Infrastructure"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!--
+                  索引 0 由 ThemeService 在运行时替换为 Light.xaml 或 Dark.xaml。
+                  这里先放浅色作为设计期与首帧回退。
+                -->
+                <ResourceDictionary Source="Themes/Light.xaml" />
+                <ResourceDictionary Source="Themes/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <infra:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+            <infra:InverseBoolConverter x:Key="InverseBool" />
+            <infra:BoolToStatusBrushConverter x:Key="BoolToStatusBrush" />
+            <infra:StringNotEmptyToVisibilityConverter x:Key="StringNotEmptyToVisibility" />
+            <infra:StepGlyphConverter x:Key="StepGlyph" />
+
+            <DataTemplate DataType="{x:Type vm:StatusViewModel}">
+                <views:StatusView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:AuthorizationViewModel}">
+                <views:AuthorizationView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:AuditViewModel}">
+                <views:AuditView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+                <views:SettingsView />
+            </DataTemplate>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
