@@ -11,8 +11,11 @@ public sealed record JournalRecord(
     string Action,
     string State,
     string Status,
+    string DurationMs,
     string Detail)
 {
+    public string DurationText => DurationMs.Length == 0 ? "" : $"{DurationMs} ms";
+
     public string ShortCommandId =>
         CommandId.Length > 12 ? CommandId[..12] : CommandId;
 
@@ -99,14 +102,15 @@ public sealed class JournalService
                 return null;
             }
 
-            var commandId = Pick(root, "command_id", "commandId", "id") ?? "";
-            var source = Pick(root, "source_peer", "sourcePeer", "from", "peer_id", "origin") ?? "";
-            var action = Pick(root, "action", "Action", "command_action") ?? "";
-            var state = Pick(root, "state", "record", "type", "kind", "phase") ?? "";
-            var status = Pick(root, "status", "result_status", "Status") ?? "";
+            // 字段名取自 p2p-agent.exe 内嵌的 json 结构体标签，非猜测
+            var commandId = Pick(root, "command_id", "message_id", "id") ?? "";
+            var source = Pick(root, "origin", "from", "executed_by", "peer_id", "source") ?? "";
+            var action = Pick(root, "action", "primitive", "operation") ?? "";
+            var state = Pick(root, "state", "kind", "type", "mode") ?? "";
+            var status = Pick(root, "status", "reason") ?? "";
 
             DateTime? ts = null;
-            var tsText = Pick(root, "timestamp", "time", "ts", "at", "created_at");
+            var tsText = Pick(root, "timestamp", "sent_at_utc", "captured_at_utc", "updated_utc", "modified_utc");
             if (tsText is not null && DateTime.TryParse(
                     tsText,
                     System.Globalization.CultureInfo.InvariantCulture,
@@ -117,15 +121,28 @@ public sealed class JournalService
                 ts = parsedTs;
             }
 
-            // 嵌套的 result.status 也纳入
-            if (status.Length == 0 &&
-                root.TryGetProperty("result", out var result) &&
-                result.ValueKind == JsonValueKind.Object)
+            // 嵌套在 result 里的字段也纳入
+            if (root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object)
             {
-                status = Pick(result, "status", "Status") ?? "";
+                if (status.Length == 0)
+                {
+                    status = Pick(result, "status", "reason") ?? "";
+                }
+
+                if (action.Length == 0)
+                {
+                    action = Pick(result, "action", "primitive", "operation") ?? "";
+                }
+
+                if (commandId.Length == 0)
+                {
+                    commandId = Pick(result, "command_id", "message_id") ?? "";
+                }
             }
 
-            return new JournalRecord(ts, commandId, source, action, state, status, line);
+            var duration = Pick(root, "duration_ms");
+
+            return new JournalRecord(ts, commandId, source, action, state, status, duration ?? "", line);
         }
         catch
         {

@@ -63,9 +63,11 @@ git push origin v1.0.0
 
 ### 任务审计
 
-读取 `agent-command-journal.jsonl`，列出本机收到并执行过的远端任务：时间、来源设备、动作、阶段、结果、Command ID。支持关键字过滤与导出。
+读取 `agent-command-journal.jsonl`，列出本机收到并执行过的远端任务：时间、来源设备、动作、阶段、结果、耗时、Command ID。支持关键字过滤与导出。
 
-同屏显示 Agent 运行日志尾部。
+同屏显示 Agent 运行日志尾部（每行带本机时间戳）。
+
+**一键诊断**：`复制诊断信息` / `保存诊断` 汇总环境、文件状态、Agent 版本、进程与端口、计划任务详情、配置（含 `allowed_peers`）、`/v1/info` 原始响应、已连接 Peer、任务记录原始行与日志尾部。私网密钥、设备私钥与 API Token 只报告存在性与大小，绝不读取内容。排障时直接把这段文本发出去即可。
 
 > 远端 `process_execute` 拥有本机 Agent 账户的完整 PowerShell 权限。这台机器的使用者有权知道谁在什么时候让它执行了什么——这是本程序存在的主要理由。
 
@@ -83,7 +85,7 @@ git push origin v1.0.0
 | 2 | 停止已有 Agent 实例，确保文件未被占用 |
 | 3 | 释放内嵌的 `p2p-agent.exe` |
 | 4 | 写入内置的 `swarm.key` |
-| 5 | 写入 `run-agent.cmd` 启动器（用于日志重定向） |
+| 5 | 复制控制软件自身到程序目录（计划任务执行的后台宿主） |
 | 6 | 写入 `agent-config.json` |
 | 7 | `icacls` 收紧数据目录权限至当前用户 + Administrators + SYSTEM |
 | 8 | 注册登录时计划任务 `P2P Agent` |
@@ -93,9 +95,24 @@ git push origin v1.0.0
 
 ### 与官方 PowerShell 安装脚本的差异
 
-计划任务执行的是 `run-agent.cmd` 而非直接执行 `p2p-agent.exe`，用于把 stdout/stderr 重定向到 `C:\ProgramData\P2PAgent\logs\agent.log`。官方脚本直接执行 exe，没有日志留存，故障时无从排查。日志超过 8 MB 自动滚动一代。
+**后台宿主模式。** `p2p-agent.exe` 是 CONSOLE 子系统程序（PE `subsystem=3`），由计划任务直接启动会在用户登录时弹出一个黑色控制台窗口——官方安装脚本存在这个现象。
 
-因此停止操作在 `schtasks /End` 之后会额外清理可能成为孤儿的 `p2p-agent.exe` 进程。
+本程序改为：计划任务执行 `ZhanClawControl.exe --run-agent`。本程序是 WinExe（无控制台），以 `CreateNoWindow` 拉起 Agent 并重定向其 stdout/stderr，逐行加本机时间戳写入 `C:\ProgramData\P2PAgent\logs\agent.log`。结果是**既无窗口，又有完整带时间的日志**。
+
+日志格式：
+
+```
+2026-08-13 22:30:01.123 [host]  starting "C:\Program Files\P2PAgent\p2p-agent.exe" -config "..."
+2026-08-13 22:30:03.456 [agent] p2p-agent ready: version=... PeerID=... control_api=127.0.0.1:7432
+```
+
+超过 8 MB 时在宿主启动阶段滚动一代（`agent.log.1`）。
+
+停止操作会先 `schtasks /End`，再显式结束宿主与可能成为孤儿的 `p2p-agent.exe`。
+
+### 字段名的来源
+
+`/v1/info`、`/v1/peers` 与 `agent-command-journal.jsonl` 的字段名不在上游文档中，本项目从 `p2p-agent.exe` 内嵌的 Go 结构体标签（`json:"..."`）中提取后使用，并保留多候选名回退。
 
 ---
 
@@ -203,7 +220,7 @@ src/ZhanClawControl/
 ## 已知限制
 
 - 仅 Windows x64；WPF 无法在 Linux/macOS 上编译，CI 必须使用 `windows-latest`
-- `/v1/info` 与 `/v1/peers` 的 JSON 字段名未在上游文档中固定，客户端采用容错解析（多候选字段名探测）。若 Agent 变更字段名，只需在 `ControlApiClient.PickString` 的候选列表中补一项
-- `agent-command-journal.jsonl` 的记录 schema 同上，采用容错解析
+- 字段名虽取自二进制中的结构体标签，但**具体哪些字段出现在哪个响应里**仍属推断，因此保留多候选回退；若 Agent 升级后字段变更，在 `ControlApiClient` / `JournalService` 的候选列表中补一项即可
+- 程序清单为 `asInvoker`（后台宿主模式必须能以标准权限启动），GUI 模式启动时自行以 `runas` 提权
 - 单文件 EXE 体积约 90–120 MB（自包含运行时 + 内嵌 Agent，已启用压缩）
 - 安装包内置 `swarm.key`，因此**发布的 EXE 本身即包含私网准入密钥**，请按内部软件对待，不要公开分发。上游 `OPENCLAW_INTEGRATION.md` 要求「发行包不得包含 swarm.key」，本项目为实现「用户免选」有意偏离该约定

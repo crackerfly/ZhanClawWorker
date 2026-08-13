@@ -123,8 +123,14 @@ public sealed class ScheduledTaskService
             30_000,
             ct);
 
+    /// <summary>
+    /// 结束 Agent 与宿主进程。schtasks /End 只结束任务实例，
+    /// 宿主被终止后 p2p-agent 可能成为孤儿，因此显式收尾。
+    /// </summary>
     public static void KillAgentProcesses()
     {
+        KillHostProcesses();
+
         foreach (var process in Process.GetProcessesByName("p2p-agent"))
         {
             try
@@ -144,17 +150,61 @@ public sealed class ScheduledTaskService
     }
 
     /// <summary>
-    /// 任务执行的是 run-agent.cmd 而不是 p2p-agent.exe 本身，
-    /// 目的是把 stdout/stderr 重定向到 logs\agent.log —— 官方安装脚本直接执行 exe，没有日志留存。
+    /// 任务执行的是本程序的 --run-agent 宿主模式，而不是直接执行 p2p-agent.exe。
+    /// p2p-agent.exe 是 CONSOLE 子系统程序，直接由计划任务启动会弹出黑窗；
+    /// 本程序是 WinExe，以 CreateNoWindow 拉起 Agent 既无窗口，又能捕获其 stdout/stderr 写入日志。
     ///
     /// 注意：taskSettingsType 的子元素顺序由 XSD 的 sequence 约束，
     /// 顺序不对会被 schtasks /XML 拒绝，因此下面的 Settings 严格按 schema 顺序排列。
     /// </summary>
+    /// <summary>
+    /// 结束以 --run-agent 启动的宿主实例。
+    ///
+    /// 判定依据是可执行文件路径等于安装目录下的副本：单实例互斥量保证 GUI 只有一个，
+    /// 即当前进程；因此路径匹配且非当前进程的，只可能是计划任务拉起的宿主。
+    /// 不使用 WMI 读命令行，避免引入 System.Management 包依赖。
+    /// </summary>
+    private static void KillHostProcesses()
+    {
+        var self = Environment.ProcessId;
+
+        foreach (var process in Process.GetProcessesByName("ZhanClawControl"))
+        {
+            try
+            {
+                if (process.Id == self)
+                {
+                    continue;
+                }
+
+                var path = process.MainModule?.FileName;
+                if (path is null ||
+                    !string.Equals(path, AppPaths.ControlExe, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5_000);
+            }
+            catch
+            {
+                // 权限不足、已退出，或无法读取模块信息
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+    }
+
     private static string BuildTaskXml(string runAsUser)
     {
         var user = SecurityElement.Escape(runAsUser) ?? runAsUser;
-        var command = SecurityElement.Escape(AppPaths.LauncherCmd) ?? AppPaths.LauncherCmd;
-        var workingDir = SecurityElement.Escape(AppPaths.DataRoot) ?? AppPaths.DataRoot;
+        var command = SecurityElement.Escape(AppPaths.ControlExe) ?? AppPaths.ControlExe;
+        var arguments = SecurityElement.Escape(AgentHost.Switch) ?? AgentHost.Switch;
+        // 与官方安装脚本一致：工作目录取程序目录
+        var workingDir = SecurityElement.Escape(AppPaths.InstallRoot) ?? AppPaths.InstallRoot;
         var now = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
         return $"""
@@ -207,6 +257,7 @@ public sealed class ScheduledTaskService
   <Actions Context="Author">
     <Exec>
       <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
       <WorkingDirectory>{workingDir}</WorkingDirectory>
     </Exec>
   </Actions>

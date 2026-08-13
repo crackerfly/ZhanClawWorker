@@ -12,7 +12,12 @@ public static class AppPaths
     public const string ScheduledTaskName = "P2P Agent";
 
     public static string AgentExe => Path.Combine(InstallRoot, "p2p-agent.exe");
-    public static string LauncherCmd => Path.Combine(DataRoot, "run-agent.cmd");
+
+    /// <summary>安装到程序目录的控制软件副本；计划任务执行的就是它（--run-agent 宿主模式）。</summary>
+    public static string ControlExe => Path.Combine(InstallRoot, "ZhanClawControl.exe");
+
+    /// <summary>早期版本使用的 cmd 启动器，现已废弃，安装时清理。</summary>
+    public static string LegacyLauncherCmd => Path.Combine(DataRoot, "run-agent.cmd");
     public static string ConfigFile => Path.Combine(DataRoot, "agent-config.json");
     public static string SwarmKeyFile => Path.Combine(DataRoot, "swarm.key");
     public static string IdentityFile => Path.Combine(DataRoot, "agent-identity.key");

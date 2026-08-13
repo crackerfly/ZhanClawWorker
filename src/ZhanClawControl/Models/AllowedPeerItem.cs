@@ -45,7 +45,8 @@ public sealed class AllowedPeerItem : ObservableObject
         PeerId.Length > 20 ? $"{PeerId[..10]}…{PeerId[^8..]}" : PeerId;
 
     /// <summary>
-    /// libp2p PeerID 的基本格式校验：base58btc 字符集，长度合理。
+    /// libp2p PeerID 的基本格式校验。
+    /// 与官方安装脚本使用同一判据：^[1-9A-HJ-NP-Za-km-z]{20,}$（base58btc 字符集，长度不设上限）。
     /// 这里只拦明显错误（粘贴了整行日志、带空格、含非法字符），真正的合法性由 Agent 判定。
     /// </summary>
     public static bool LooksLikePeerId(string value)
@@ -56,12 +57,12 @@ public sealed class AllowedPeerItem : ObservableObject
         }
 
         var trimmed = value.Trim();
-        if (trimmed.Length is < 40 or > 80)
+        if (trimmed.Length < 20)
         {
             return false;
         }
 
-        const string base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        return trimmed.All(c => base58.Contains(c));
+        const string Base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        return trimmed.All(c => Base58.Contains(c));
     }
 }

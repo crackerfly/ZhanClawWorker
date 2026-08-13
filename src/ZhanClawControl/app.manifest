@@ -5,8 +5,12 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <!-- 安装、注册计划任务、写 Program Files / ProgramData、收紧 ACL 都需要管理员 -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <!--
+          必须是 asInvoker：计划任务以 LeastPrivilege 运行本程序的后台宿主模式，
+          若清单声明 requireAdministrator，任务会因需要提权而启动失败。
+          GUI 模式在 App.OnStartup 中检测并自行以 runas 重启提权。
+        -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

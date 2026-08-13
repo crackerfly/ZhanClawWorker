@@ -145,15 +145,16 @@ public sealed class InstallerService
             return steps;
         }
 
-        // 5. 启动器脚本（用于把 Agent 输出重定向到日志）
+        // 5. 把控制软件自身复制到程序目录：计划任务执行的就是这个副本（--run-agent 宿主模式）
         try
         {
-            WriteLauncherCmd();
-            Record("写入启动器", true, AppPaths.LauncherCmd);
+            InstallControlExecutable();
+            CleanupLegacyLauncher();
+            Record("安装后台宿主", true, $"{AppPaths.ControlExe} {AgentHost.Switch}");
         }
         catch (Exception ex)
         {
-            Record("写入启动器", false, ex.Message);
+            Record("安装后台宿主", false, ex.Message);
             return steps;
         }
 
@@ -274,20 +275,43 @@ public sealed class InstallerService
         return false;
     }
 
-    private static void WriteLauncherCmd()
+    /// <summary>
+    /// 把当前运行的 ZhanClawControl.exe 复制到程序目录。
+    /// 计划任务需要一个稳定路径，用户下载目录里的原始文件随时可能被移动或删除。
+    /// </summary>
+    private static void InstallControlExecutable()
     {
-        var content = $"""
-@echo off
-setlocal EnableExtensions DisableDelayedExpansion
-if not exist "{AppPaths.LogDirectory}" mkdir "{AppPaths.LogDirectory}"
-echo [%DATE% %TIME%] starting p2p-agent >> "{AppPaths.AgentLogFile}"
-"{AppPaths.AgentExe}" -config "{AppPaths.ConfigFile}" >> "{AppPaths.AgentLogFile}" 2>&1
-echo [%DATE% %TIME%] p2p-agent exited with %ERRORLEVEL% >> "{AppPaths.AgentLogFile}"
-exit /b %ERRORLEVEL%
-""";
+        var source = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(source) || !File.Exists(source))
+        {
+            throw new FileNotFoundException("无法定位控制软件自身路径。");
+        }
 
-        // CMD 脚本用 ANSI/UTF-8 无 BOM，路径均为 ASCII，安全
-        File.WriteAllText(AppPaths.LauncherCmd, content.ReplaceLineEndings("\r\n"), new UTF8Encoding(false));
+        if (string.Equals(source, AppPaths.ControlExe, StringComparison.OrdinalIgnoreCase))
+        {
+            // 已经是从安装目录运行，无需复制
+            return;
+        }
+
+        var tempPath = AppPaths.ControlExe + ".tmp";
+        File.Copy(source, tempPath, overwrite: true);
+        File.Move(tempPath, AppPaths.ControlExe, overwrite: true);
+    }
+
+    /// <summary>清理早期版本使用的 cmd 启动器。</summary>
+    private static void CleanupLegacyLauncher()
+    {
+        try
+        {
+            if (File.Exists(AppPaths.LegacyLauncherCmd))
+            {
+                File.Delete(AppPaths.LegacyLauncherCmd);
+            }
+        }
+        catch
+        {
+            // 残留文件不影响功能
+        }
     }
 
     private static void ExtractResource(string resourceName, string targetPath)
@@ -322,7 +346,22 @@ exit /b %ERRORLEVEL%
                 File.Delete(AppPaths.AgentExe);
             }
 
-            steps.Add(new InstallStep("删除程序文件", true, AppPaths.AgentExe));
+            // 安装目录下的控制软件副本可能正是当前进程，删不掉就留待重启后清理
+            try
+            {
+                if (File.Exists(AppPaths.ControlExe) &&
+                    !string.Equals(Environment.ProcessPath, AppPaths.ControlExe,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(AppPaths.ControlExe);
+                }
+            }
+            catch
+            {
+                // 被占用时忽略
+            }
+
+            steps.Add(new InstallStep("删除程序文件", true, AppPaths.InstallRoot));
         }
         catch (Exception ex)
         {

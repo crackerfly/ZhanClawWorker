@@ -25,6 +25,8 @@ public sealed class AuditViewModel : ObservableObject
         ExportJournalCommand = new RelayCommand(ExportJournal);
         ClearLogCommand = new RelayCommand(ClearLog);
         OpenDataFolderCommand = new RelayCommand(OpenDataFolder);
+        CopyDiagnosticsCommand = new AsyncRelayCommand(CopyDiagnosticsAsync, () => !IsBusy);
+        SaveDiagnosticsCommand = new AsyncRelayCommand(SaveDiagnosticsAsync, () => !IsBusy);
     }
 
     public ObservableCollection<JournalRecord> Records { get; } = new();
@@ -33,6 +35,8 @@ public sealed class AuditViewModel : ObservableObject
     public RelayCommand ExportJournalCommand { get; }
     public RelayCommand ClearLogCommand { get; }
     public RelayCommand OpenDataFolderCommand { get; }
+    public AsyncRelayCommand CopyDiagnosticsCommand { get; }
+    public AsyncRelayCommand SaveDiagnosticsCommand { get; }
 
     public string LogText
     {
@@ -66,6 +70,8 @@ public sealed class AuditViewModel : ObservableObject
             if (SetProperty(ref _isBusy, value))
             {
                 RefreshCommand.RaiseCanExecuteChanged();
+                CopyDiagnosticsCommand.RaiseCanExecuteChanged();
+                SaveDiagnosticsCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -176,6 +182,69 @@ public sealed class AuditViewModel : ObservableObject
 
         _log.Clear();
         LogText = "";
+    }
+
+    private async Task CopyDiagnosticsAsync()
+    {
+        IsBusy = true;
+
+        try
+        {
+            var text = await DiagnosticsCollector.CollectAsync().ConfigureAwait(true);
+            Clipboard.SetText(text);
+
+            MessageBox.Show(
+                "诊断信息已复制到剪贴板。\n\n" +
+                "内容包含环境、文件状态、计划任务、配置、API 响应与日志尾部，\n" +
+                "不包含私网密钥、设备私钥或 API Token 的内容。",
+                AppInfo.ProductName,
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"采集失败：{ex.Message}", AppInfo.ProductName,
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task SaveDiagnosticsAsync()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "保存诊断信息",
+            Filter = "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+            FileName = $"zhanclaw-worker-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.txt"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        IsBusy = true;
+
+        try
+        {
+            var text = await DiagnosticsCollector.CollectAsync().ConfigureAwait(true);
+            await File.WriteAllTextAsync(dialog.FileName, text, new System.Text.UTF8Encoding(true))
+                .ConfigureAwait(true);
+
+            MessageBox.Show("已保存。", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"保存失败：{ex.Message}", AppInfo.ProductName,
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     private void OpenDataFolder()

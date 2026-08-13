@@ -8,7 +8,18 @@ using System.Text.Json.Serialization.Metadata;
 
 namespace ZhanClawControl.Services;
 
-public sealed record AgentInfo(string PeerId, string Version, string RawJson);
+public sealed record AgentInfo(
+    string PeerId,
+    string Version,
+    string AgentName,
+    string RelayPeerId,
+    bool? ReservationReady,
+    bool? MdnsReady,
+    int? ConnectedRemoteCount,
+    int? RunningTasks,
+    int? AvailableTaskSlots,
+    IReadOnlyList<string> ListenAddresses,
+    string RawJson);
 
 public sealed record PeerEntry(
     string PeerId,
@@ -119,10 +130,24 @@ public sealed class ControlApiClient : IDisposable
             using var doc = JsonDocument.Parse(json);
             var root = Unwrap(doc.RootElement);
 
-            var peerId = PickString(root, "peer_id", "peerId", "peerID", "PeerID", "id");
-            var version = PickString(root, "version", "agent_version", "Version");
+            // 字段名取自 p2p-agent.exe 内嵌的 json 结构体标签，非猜测
+            var peerId = PickString(root, "peer_id", "peerId", "id");
+            var version = PickString(root, "version");
+            var agentName = PickString(root, "agent_name", "name");
+            var relayPeerId = PickString(root, "relay_peer_id");
 
-            return new AgentInfo(peerId ?? "", version ?? "", Prettify(json));
+            return new AgentInfo(
+                peerId ?? "",
+                version ?? "",
+                agentName ?? "",
+                relayPeerId ?? "",
+                PickBool(root, "reservation_ready"),
+                PickBool(root, "mdns_ready"),
+                PickInt(root, "connected_remote_count"),
+                PickInt(root, "running_tasks"),
+                PickInt(root, "available_task_slots"),
+                PickStringArray(root, "listen_addresses", "addresses", "addrs"),
+                Prettify(json));
         }
         catch
         {
@@ -143,7 +168,7 @@ public sealed class ControlApiClient : IDisposable
             }
 
             using var doc = JsonDocument.Parse(json);
-            var array = FindArray(doc.RootElement, "peers", "nodes", "items");
+            var array = FindArray(doc.RootElement, "peers", "nodes", "providers");
             if (array is null)
             {
                 return result;
@@ -162,10 +187,10 @@ public sealed class ControlApiClient : IDisposable
                     continue;
                 }
 
-                var peerId = PickString(element, "peer_id", "peerId", "peerID", "PeerID", "id") ?? "";
-                var name = PickString(element, "name", "agent_name", "Name") ?? "";
-                var path = PickString(element, "connection_path", "connectionPath", "path", "delivery_path") ?? "";
-                var scope = PickString(element, "scope", "Scope") ?? "";
+                var peerId = PickString(element, "peer_id", "peerId", "id") ?? "";
+                var name = PickString(element, "agent_name", "name") ?? "";
+                var path = PickString(element, "connection_path", "delivery_path") ?? "";
+                var scope = PickString(element, "scope", "role", "kind") ?? "";
 
                 if (peerId.Length > 0)
                 {
@@ -262,6 +287,81 @@ public sealed class ControlApiClient : IDisposable
         }
 
         return null;
+    }
+
+    private static bool? PickBool(JsonElement element, params string[] candidates)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var key in candidates)
+        {
+            if (element.TryGetProperty(key, out var value))
+            {
+                if (value.ValueKind == JsonValueKind.True) return true;
+                if (value.ValueKind == JsonValueKind.False) return false;
+            }
+        }
+
+        return null;
+    }
+
+    private static int? PickInt(JsonElement element, params string[] candidates)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var key in candidates)
+        {
+            if (element.TryGetProperty(key, out var value) &&
+                value.ValueKind == JsonValueKind.Number &&
+                value.TryGetInt32(out var number))
+            {
+                return number;
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> PickStringArray(JsonElement element, params string[] candidates)
+    {
+        var result = new List<string>();
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return result;
+        }
+
+        foreach (var key in candidates)
+        {
+            if (!element.TryGetProperty(key, out var value) || value.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var item in value.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var text = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        result.Add(text);
+                    }
+                }
+            }
+
+            if (result.Count > 0)
+            {
+                break;
+            }
+        }
+
+        return result;
     }
 
     private static string Prettify(string json)

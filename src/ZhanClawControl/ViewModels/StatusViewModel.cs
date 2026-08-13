@@ -21,6 +21,7 @@ public sealed class StatusViewModel : ObservableObject
     private string _busyMessage = "";
     private bool _isBusy;
     private int _authorizedCount;
+    private string _connectivitySummary = "—";
 
     public StatusViewModel(ControlApiClient api)
     {
@@ -77,6 +78,13 @@ public sealed class StatusViewModel : ObservableObject
     {
         get => _agentName;
         private set => SetProperty(ref _agentName, value);
+    }
+
+    /// <summary>中继预留 / mDNS / 已连接数，用于判断本机是否真的接入了网络。</summary>
+    public string ConnectivitySummary
+    {
+        get => _connectivitySummary;
+        private set => SetProperty(ref _connectivitySummary, value);
     }
 
     public string TaskStateText
@@ -161,11 +169,17 @@ public sealed class StatusViewModel : ObservableObject
             {
                 PeerId = info.PeerId;
                 AgentVersion = info.Version;
+                AgentName = info.AgentName;
+                ConnectivitySummary = BuildConnectivitySummary(info);
+
                 StatusHeadline = "本机已接入 P2P 网络";
-                StatusDetail = "Agent 正在运行，可接受已授权主控设备的任务。";
+                StatusDetail = AuthorizedCount == 0
+                    ? "Agent 正在运行，但尚未授权任何主控设备，当前会拒绝所有远端任务。"
+                    : "Agent 正在运行，可接受已授权主控设备的任务。";
             }
             else
             {
+                ConnectivitySummary = "—";
                 StatusHeadline = "Agent 正在运行，但本机 API 无响应";
                 StatusDetail = "端口已监听但读取 /v1/info 失败，请检查 agent-api.token 是否可读。";
             }
@@ -177,6 +191,7 @@ public sealed class StatusViewModel : ObservableObject
         {
             PeerId = "";
             AgentVersion = "";
+            ConnectivitySummary = "—";
             ConnectedPeers.Clear();
 
             StatusHeadline = processAlive
@@ -189,6 +204,46 @@ public sealed class StatusViewModel : ObservableObject
 
         _log.RollIfNeeded();
     }
+
+    private static string BuildConnectivitySummary(AgentInfo info)
+    {
+        var parts = new List<string>();
+
+        if (info.ReservationReady is { } reservation)
+        {
+            parts.Add(reservation ? "中继预留已就绪" : "中继预留未就绪");
+        }
+
+        if (info.RelayPeerId.Length > 0)
+        {
+            parts.Add($"中继 {Shorten(info.RelayPeerId)}");
+        }
+
+        if (info.MdnsReady is { } mdns)
+        {
+            parts.Add(mdns ? "局域网发现已启用" : "局域网发现未启用");
+        }
+
+        if (info.ConnectedRemoteCount is { } connected)
+        {
+            parts.Add($"已连接 {connected} 个远端");
+        }
+
+        if (info.RunningTasks is { } running && info.AvailableTaskSlots is { } slots)
+        {
+            parts.Add($"任务 {running} 运行中 / {slots} 空闲槽位");
+        }
+
+        if (info.ListenAddresses.Count > 0)
+        {
+            parts.Add($"监听 {info.ListenAddresses.Count} 个地址");
+        }
+
+        return parts.Count == 0 ? "—" : string.Join("，", parts);
+    }
+
+    private static string Shorten(string value) =>
+        value.Length > 14 ? $"{value[..6]}…{value[^6..]}" : value;
 
     private void SyncPeers(IReadOnlyList<PeerEntry> peers)
     {

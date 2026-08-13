@@ -90,13 +90,22 @@
                         <TextBlock Grid.Column="1" Text="{Binding TaskStateText}" />
                     </Grid>
 
-                    <Grid>
+                    <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="120" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="远端授权" Style="{StaticResource CaptionText}" />
                         <TextBlock Grid.Column="1" Text="{Binding AuthorizationSummary}" />
+                    </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="120" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="网络可达性" Style="{StaticResource CaptionText}" />
+                        <TextBlock Grid.Column="1" Text="{Binding ConnectivitySummary}" TextWrapping="Wrap" />
                     </Grid>
                 </StackPanel>
             </Border>

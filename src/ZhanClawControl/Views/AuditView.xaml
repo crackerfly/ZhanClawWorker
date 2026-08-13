@@ -25,6 +25,9 @@
             <TextBox Grid.Column="0" Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
                 <Button Content="刷新" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
+                <Button Content="复制诊断信息" Style="{StaticResource AccentButton}"
+                        Command="{Binding CopyDiagnosticsCommand}" MinWidth="118" Margin="0,0,8,0" />
+                <Button Content="保存诊断" Command="{Binding SaveDiagnosticsCommand}" Margin="0,0,8,0" />
                 <Button Content="导出记录" Command="{Binding ExportJournalCommand}" Margin="0,0,8,0" />
                 <Button Content="打开数据目录" Command="{Binding OpenDataFolderCommand}" MinWidth="110" />
             </StackPanel>
@@ -41,6 +44,7 @@
                         <DataGridTextColumn Header="动作" Binding="{Binding Action}" Width="170" />
                         <DataGridTextColumn Header="阶段" Binding="{Binding State}" Width="110" />
                         <DataGridTextColumn Header="结果" Binding="{Binding Status}" Width="100" />
+                        <DataGridTextColumn Header="耗时" Binding="{Binding DurationText}" Width="80" />
                         <DataGridTextColumn Header="Command ID" Binding="{Binding ShortCommandId}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
@@ -48,7 +52,11 @@
         </Border>
 
         <Grid Grid.Row="3" Margin="0,0,0,8">
-            <TextBlock Text="运行日志" Style="{StaticResource SectionTitle}" Margin="0" />
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="运行日志" Style="{StaticResource SectionTitle}" Margin="0,0,10,0" />
+                <TextBlock Text="每行前缀为本机时间；[agent] 为 Agent 自身输出，[host] 为后台宿主"
+                           Style="{StaticResource CaptionText}" VerticalAlignment="Center" />
+            </StackPanel>
             <Button Content="清空日志" HorizontalAlignment="Right" Command="{Binding ClearLogCommand}" />
         </Grid>
 
