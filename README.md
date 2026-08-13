@@ -128,10 +128,32 @@ dotnet publish src\ZhanClawControl\ZhanClawControl.csproj `
 
 ### CI
 
-| 工作流 | 触发 | 作用 |
+| 工作流 | 触发 | 产物位置 |
 |---|---|---|
-| `build.yml` | push / PR / 手动 | 编译检查与 publish 冒烟 |
-| `release.yml` | 推送 `v*` tag / 手动 | 编译、打包、生成 SHA256、创建 Release |
+| `build.yml` | 推送主分支 | **dev 预发行版**（固定链接，每次覆盖）+ Actions Artifacts（保留 14 天） |
+| `build.yml` | Pull Request | 仅 Artifacts，不发布 |
+| `release.yml` | 推送 `v*` tag / 手动 | **Releases** 正式版本，带版本号与 SHA256 |
+
+### 两个发布通道
+
+**dev 通道** —— 推主分支即自动发布，地址固定：
+
+```
+https://github.com/<owner>/<repo>/releases/tag/dev
+```
+
+文件名固定为 `ZhanClawWorker-dev-win-x64.exe`，每次覆盖上一份，不会堆积历史资产。
+标记为 prerelease 且 `make_latest: false`，不会顶替正式版的 latest 位置。
+版本号写作 `1.0.0-dev.<构建号>`，可在 EXE 属性里核对是哪一次构建。
+
+**正式通道** —— 打 tag 发布：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+产出 `ZhanClawWorker-<版本>-win-x64.exe`、`.zip` 与 `SHA256SUMS.txt`。
 
 `release.yml` 从 tag 名解析版本号并注入程序集版本；带 `-` 的版本（如 `v1.1.0-rc1`）自动标记为 prerelease。
 

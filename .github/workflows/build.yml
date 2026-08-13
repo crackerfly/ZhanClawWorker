@@ -10,7 +10,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # 发布滚动 dev 预发行版需要写权限；PR 触发时不会走到发布步骤
+  contents: write
+
+concurrency:
+  # 连续推送时只保留最后一次，避免多个构建同时抢同一个 dev tag
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -52,21 +58,86 @@ jobs:
           --configuration Release
           --no-restore
 
-      - name: Publish (smoke)
-        run: >
-          dotnet publish src/ZhanClawControl/ZhanClawControl.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:EnableCompressionInSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          --output artifacts/publish
-
-      - name: Report output size
+      - name: Publish
         shell: pwsh
         run: |
-          Get-ChildItem artifacts/publish -File |
-            Sort-Object Length -Descending |
+          dotnet publish src/ZhanClawControl/ZhanClawControl.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:Version=1.0.0-dev.${{ github.run_number }} `
+            -p:AssemblyVersion=1.0.0.${{ github.run_number }} `
+            -p:FileVersion=1.0.0.${{ github.run_number }} `
+            --output artifacts/publish
+
+      - name: Stage artifacts
+        id: stage
+        shell: pwsh
+        run: |
+          $short = '${{ github.sha }}'.Substring(0, 7)
+          New-Item -ItemType Directory -Path artifacts/ci -Force | Out-Null
+
+          # dev 通道使用固定文件名，每次发布覆盖上一份，避免 Release 里堆积历史资产
+          $devExe = 'artifacts/ci/ZhanClawWorker-dev-win-x64.exe'
+          Copy-Item 'artifacts/publish/ZhanClawControl.exe' $devExe
+
+          Get-FileHash -Algorithm SHA256 -Path $devExe |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Path 'artifacts/ci/SHA256SUMS.txt' -Encoding utf8
+
+          "short=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Get-ChildItem artifacts/ci -File |
             Select-Object Name, @{n='SizeMB';e={[math]::Round($_.Length/1MB,2)}} |
             Format-Table -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZhanClawWorker-ci-${{ steps.stage.outputs.short }}
+          path: artifacts/ci/*
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+
+      # ---- 以下仅在推送主分支时执行，PR 不发布 ----
+
+      - name: Move dev tag to current commit
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f dev
+          git push -f origin dev
+
+      - name: Publish rolling dev release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 开发构建 (dev)
+          tag_name: dev
+          prerelease: true
+          make_latest: false
+          draft: false
+          files: |
+            artifacts/ci/ZhanClawWorker-dev-win-x64.exe
+            artifacts/ci/SHA256SUMS.txt
+          body: |
+            ## 开发构建
+
+            **每次推送主分支自动覆盖，始终是最新代码。** 仅供内部测试，不用于正式分发。
+
+            | 项 | 值 |
+            |---|---|
+            | 提交 | [`${{ steps.stage.outputs.short }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
+            | 构建号 | `${{ github.run_number }}` |
+            | 版本 | `1.0.0-dev.${{ github.run_number }}` |
+            | 构建记录 | [运行 #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+            下载 `ZhanClawWorker-dev-win-x64.exe` 后**右键以管理员身份运行**，无需安装 .NET 运行时。
+
+            正式版本请到 [Releases](https://github.com/${{ github.repository }}/releases) 页面取带版本号的构建。
