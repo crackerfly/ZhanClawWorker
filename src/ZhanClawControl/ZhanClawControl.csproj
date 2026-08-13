@@ -14,7 +14,12 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <!--
+      不设 SupportedOSPlatformVersion：net8.0-windows 的 TargetPlatformVersion 默认为 7.0，
+      设成 10.0.17763.0 会触发 NETSDK1135（支持版本不能高于目标版本）。
+      该属性仅供平台兼容性分析器使用，对 WPF 无实际收益；
+      最低系统版本由 app.manifest 的 supportedOS 声明。
+    -->
   </PropertyGroup>
 
   <PropertyGroup>

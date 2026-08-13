@@ -81,8 +81,13 @@ public sealed class AgentConfigService
 
     public static string GetString(JsonObject config, string key, string fallback = "")
     {
-        var node = config[key];
-        return node is null ? fallback : node.GetValue<string?>() ?? fallback;
+        // 配置可能被手工编辑成非字符串类型，这里不允许抛异常
+        if (config[key] is JsonValue value && value.TryGetValue<string>(out var text) && text is not null)
+        {
+            return text;
+        }
+
+        return fallback;
     }
 
     public static int GetInt(JsonObject config, string key, int fallback)
@@ -119,10 +124,10 @@ public sealed class AgentConfigService
 
         foreach (var item in array)
         {
-            var value = item?.GetValue<string?>();
-            if (!string.IsNullOrWhiteSpace(value))
+            if (item is JsonValue value && value.TryGetValue<string>(out var text) &&
+                !string.IsNullOrWhiteSpace(text))
             {
-                result.Add(value.Trim());
+                result.Add(text.Trim());
             }
         }
 

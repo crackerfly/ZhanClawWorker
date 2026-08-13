@@ -1,10 +1,8 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <sys:Double x:Key="CornerRadiusValue">6</sys:Double>
-    <CornerRadius x:Key="CardCornerRadius">8</CornerRadius>
-    <CornerRadius x:Key="ControlCornerRadius">6</CornerRadius>
+    <CornerRadius x:Key="CardCornerRadius" TopLeft="8" TopRight="8" BottomLeft="8" BottomRight="8" />
+    <CornerRadius x:Key="ControlCornerRadius" TopLeft="6" TopRight="6" BottomLeft="6" BottomRight="6" />
 
     <Style x:Key="CaptionText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />

@@ -1,7 +1,6 @@
 using System.Threading;
 using System.Windows;
 using ZhanClawControl.Services;
-using ZhanClawControl.Views;
 
 namespace ZhanClawControl;
 
@@ -53,7 +52,7 @@ public partial class App : Application
 
     private void ShowWizard()
     {
-        var wizard = new WizardWindow();
+        var wizard = new Views.WizardWindow();
         Theme.Track(wizard);
 
         wizard.Completed += (_, success) =>
@@ -75,9 +74,9 @@ public partial class App : Application
 
     private void ShowMainWindow()
     {
-        var window = new MainWindow();
+        var window = new Views.MainWindow();
         Theme.Track(window);
-        MainWindow = window;
+        base.MainWindow = window;
         window.Show();
     }
 
