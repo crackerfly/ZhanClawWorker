@@ -2,20 +2,9 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using ZhanClawControl.Models;
 
 namespace ZhanClawControl.Services;
-
-public sealed class UiState
-{
-    /// <summary>PeerID -> 用户自定义备注名。仅本地展示用，不写入 agent-config.json。</summary>
-    public Dictionary<string, string> PeerNotes { get; set; } = new();
-
-    /// <summary>关闭主窗口时最小化到托盘而非退出。</summary>
-    public bool MinimizeToTray { get; set; } = true;
-
-    /// <summary>紧急断开授权时备份的白名单，用于一键恢复。</summary>
-    public List<string> LastAllowedPeersBackup { get; set; } = new();
-}
 
 public sealed class UiStateService
 {
@@ -28,33 +17,110 @@ public sealed class UiStateService
 
     public UiState Load()
     {
+        if (TryLoad(AppPaths.UiStateFile, out var state))
+        {
+            return state;
+        }
+
+        // File.Replace keeps the previous valid state here. A torn/corrupt primary
+        // file therefore does not silently erase peer notes or the emergency backup.
+        return TryLoad(AppPaths.UiStateFile + ".bak", out state) ? state : new UiState();
+    }
+
+    public bool Save(UiState state) => Save(state, out _);
+
+    public bool Save(UiState state, out string? error)
+    {
+        string? tempPath = null;
         try
         {
-            if (!File.Exists(AppPaths.UiStateFile))
+            RuntimeSecurityService.ValidateSecureDataRootForWrite();
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile);
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile + ".bak");
+            var json = JsonSerializer.Serialize(state, Options);
+            tempPath = Path.Combine(
+                AppPaths.DataRoot,
+                $".{Path.GetFileName(AppPaths.UiStateFile)}.{Guid.NewGuid():N}.tmp");
+
+            using (var stream = new FileStream(
+                       tempPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       16 * 1024,
+                       FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
             {
-                return new UiState();
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+            RuntimeSecurityService.RejectReparsePoint(tempPath);
+            RuntimeSecurityService.ValidateSecureDataRootForWrite();
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile);
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile + ".bak");
+
+            if (File.Exists(AppPaths.UiStateFile))
+            {
+                File.Replace(tempPath, AppPaths.UiStateFile, AppPaths.UiStateFile + ".bak", true);
+            }
+            else
+            {
+                File.Move(tempPath, AppPaths.UiStateFile);
             }
 
-            var json = File.ReadAllText(AppPaths.UiStateFile, Encoding.UTF8);
-            return JsonSerializer.Deserialize<UiState>(json) ?? new UiState();
+            RuntimeSecurityService.ValidateSecureDataRootForWrite();
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile);
+            RuntimeSecurityService.RejectReparsePoint(AppPaths.UiStateFile + ".bak");
+
+            error = null;
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            return new UiState();
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (tempPath is not null)
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // Best effort cleanup; the committed state is unaffected.
+                }
+            }
         }
     }
 
-    public void Save(UiState state)
+    private static bool TryLoad(string path, out UiState state)
     {
         try
         {
-            Directory.CreateDirectory(AppPaths.DataRoot);
-            var json = JsonSerializer.Serialize(state, Options);
-            File.WriteAllText(AppPaths.UiStateFile, json, new UTF8Encoding(false));
+            if (File.Exists(path))
+            {
+                RuntimeSecurityService.ValidateSecureDataRootForWrite();
+                RuntimeSecurityService.RejectReparsePoint(path);
+                var json = File.ReadAllText(path, Encoding.UTF8);
+                RuntimeSecurityService.RejectReparsePoint(path);
+                var parsed = JsonSerializer.Deserialize<UiState>(json);
+                if (parsed is not null)
+                {
+                    state = parsed;
+                    return true;
+                }
+            }
         }
         catch
         {
-            // 状态文件写失败不影响主流程
+            // The caller will try the last known-good backup.
         }
+
+        state = new UiState();
+        return false;
     }
 }

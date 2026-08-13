@@ -2,6 +2,9 @@
 bin/
 obj/
 artifacts/
+*_wpftmp.csproj
+__pycache__/
+*.pyc
 *.user
 *.suo
 .vs/

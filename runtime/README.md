@@ -1,6 +1,6 @@
 # runtime 目录
 
-构建前必须放入的两个文件。**两者都需要提交入库。**
+构建前必须放入以下冻结载荷。正式发布缺少任一文件都会失败。
 
 ---
 
@@ -20,6 +20,17 @@ git add runtime/p2p-agent.exe
 
 升级 Agent：替换本文件、提交、打新 tag。
 
+### payload-manifest.json（必需）
+
+该清单冻结 `p2p-agent.exe` 的 SHA-256、与该哈希绑定的已审查版本元数据、AMD64/Console PE 形态、
+Authenticode 必须为 `Valid`，以及签名者名称、叶证书和公钥指纹：
+
+`CN=StarSoftComm(China) Ltd.`
+
+替换 Agent 后必须在受信 Windows 机器上先核对签名与版本，再将审查结果与精确哈希一起写入清单。
+CI 会运行 `scripts/Test-Payload.ps1`；安装器释放二进制后会再校验精确 SHA-256、PE 形态和 Authenticode 固定值。管理器不会为版本探测而以提权身份执行 Agent；清单中的版本是与已审查哈希绑定的元数据。
+任何安装边界校验不匹配都会在覆盖现有 Agent 之前中止。
+
 ---
 
 ## swarm.key（必需，内置以便用户免选）
@@ -33,7 +44,8 @@ git add runtime/swarm.key
 
 存在时会一并内嵌进安装器，安装向导**不再要求用户选择文件**，只显示一行确认。
 
-缺失时构建仍然成功（只报警告），但安装向导会退回为手动选择文件。
+正式 Release、主分支 dev 与本地项目构建均要求存在有效 `swarm.key`；缺失会直接失败。
+安装器仍能读取既有 `swarm.key`，升级/修复不会用内置 key 覆盖本机已有 key。
 
 ### 备选：构建期从 Secret 注入
 
@@ -55,9 +67,10 @@ git add runtime/swarm.key
 
 `swarm.key` 一旦入库，**本仓库必须保持 Private**。
 
-私网密钥泄露意味着任何人都能加入这个 libp2p 私有网络。虽然它**不等于**获得远程执行权
-（那由每台被控端的 `allowed_peers` 白名单单独控制，见 `ARCHITECTURE.md` §19 的四层信任边界），
-但它是第一道防线，且一旦泄露只能靠全网轮换密钥来补救——所有设备都要重装。
+私网密钥泄露会破坏私网准入边界。它本身不应被当作远程执行授权；远程请求是否被接受还取决于
+部署的 Agent 对来源、`allowed_peers` 和具体 Primitive 的实际校验。本仓库没有该 Agent 的 Go 源码，
+因此不能把管理器写入的白名单描述成整个系统唯一或已被证明有效的执行边界。密钥泄露后应全网轮换，
+所有协作设备都必须同步更新。
 
 上游 `OPENCLAW_INTEGRATION.md` 明确要求「发行包不得包含 swarm.key」。本仓库为了做到
 「用户免选」而有意偏离该约定，代价就是仓库必须私有。若将来需要开源本仓库，

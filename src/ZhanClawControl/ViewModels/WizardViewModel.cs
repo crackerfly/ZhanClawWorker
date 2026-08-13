@@ -18,19 +18,19 @@ public sealed class WizardViewModel : ObservableObject
     private readonly UiStateService _uiState = new();
 
     private int _step;
-    private string _agentName = Environment.MachineName + "-worker";
-    private string _agentTags = "worker";
+    private string _agentName = Environment.MachineName + "-agent";
+    private string _agentTags = "agent";
     private string _controllerPeerId = "";
     private string _controllerNote = "";
     private string _swarmKeyPath = "";
-    private bool _hardenAcl = true;
     private bool _installing;
     private bool _finished;
     private bool _succeeded;
-    private string _runAsUser = InstallerService.CurrentUserName;
+    private string _runAsUser;
 
     public WizardViewModel()
     {
+        _runAsUser = App.InteractiveUserName;
         NextCommand = new RelayCommand(Next, CanGoNext);
         BackCommand = new RelayCommand(Back, () => Step > 0 && !Installing);
         BrowseSwarmKeyCommand = new RelayCommand(BrowseSwarmKey);
@@ -39,7 +39,7 @@ public sealed class WizardViewModel : ObservableObject
         FinishCommand = new RelayCommand(() => RequestClose?.Invoke(this, Succeeded));
     }
 
-    public ObservableCollection<InstallStep> Steps { get; } = new();
+    public ObservableCollection<InstallStepDisplay> Steps { get; } = new();
 
     public RelayCommand NextCommand { get; }
     public RelayCommand BackCommand { get; }
@@ -75,16 +75,16 @@ public sealed class WizardViewModel : ObservableObject
 
     public string StepTitle => Step switch
     {
-        0 => "本机信息",
-        1 => "授权主控设备",
-        _ => "安装"
+        0 => App.Localization.Text("WizardStepMachine"),
+        1 => App.Localization.Text("WizardStepAuthorization"),
+        _ => App.Localization.Text("WizardStepInstall")
     };
 
     public string StepCaption => Step switch
     {
-        0 => "设置这台设备在 Fleet 中显示的名称，并指定私有网络密钥。",
-        1 => "只有列入白名单的主控设备才能向本机提交任务。留空则安装后拒绝所有远端操作。",
-        _ => "即将写入程序文件、配置与开机任务。全过程可见，失败会立即停止。"
+        0 => App.Localization.Text("WizardCaptionMachine"),
+        1 => App.Localization.Text("WizardCaptionAuthorization"),
+        _ => App.Localization.Text("WizardCaptionInstall")
     };
 
     public string AgentName
@@ -113,6 +113,7 @@ public sealed class WizardViewModel : ObservableObject
             if (SetProperty(ref _controllerPeerId, value))
             {
                 OnPropertyChanged(nameof(PeerIdHint));
+                NextCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -130,17 +131,17 @@ public sealed class WizardViewModel : ObservableObject
             var value = ControllerPeerId.Trim();
             if (value.Length == 0)
             {
-                return "留空表示暂不授权任何主控设备（安全默认值，可在安装后随时添加）";
+                return App.Localization.Text("PeerHintEmpty");
             }
 
             if (value == "*")
             {
-                return "不允许使用通配符：那会授权私有网络中的所有成员控制本机";
+                return App.Localization.Text("PeerWildcardRejected");
             }
 
             return AllowedPeerItem.LooksLikePeerId(value)
-                ? "格式看起来正常"
-                : "格式可疑：PeerID 不含空格，长度通常为 52 个 base58 字符";
+                ? App.Localization.Text("AuthorizationPeerIdValid")
+                : App.Localization.Text("AuthorizationPeerIdSuspicious");
         }
     }
 
@@ -168,20 +169,22 @@ public sealed class WizardViewModel : ObservableObject
         {
             if (HasEmbeddedSwarmKey)
             {
-                return "已内置于安装包，无需手动选择。";
+                return App.Localization.Text("WizardKeyEmbedded");
             }
 
             if (SwarmKeyPath.Trim().Length > 0)
             {
-                return File.Exists(SwarmKeyPath) ? "已选择文件" : "所选文件不存在";
+                return File.Exists(SwarmKeyPath)
+                    ? App.Localization.Text("WizardKeySelected")
+                    : App.Localization.Text("WizardKeyMissingFile");
             }
 
             if (File.Exists(AppPaths.SwarmKeyFile))
             {
-                return "使用本机已有的 swarm.key";
+                return App.Localization.Text("WizardKeyExisting");
             }
 
-            return "必须提供 swarm.key，否则无法加入私有网络";
+            return App.Localization.Text("WizardKeyRequired");
         }
     }
 
@@ -193,14 +196,13 @@ public sealed class WizardViewModel : ObservableObject
     public string RunAsUser
     {
         get => _runAsUser;
-        set => SetProperty(ref _runAsUser, value);
+        set
+        {
+            if (SetProperty(ref _runAsUser, value)) NextCommand.RaiseCanExecuteChanged();
+        }
     }
 
-    public bool HardenAcl
-    {
-        get => _hardenAcl;
-        set => SetProperty(ref _hardenAcl, value);
-    }
+    public bool HardenAcl => true;
 
     public bool Installing
     {
@@ -242,19 +244,23 @@ public sealed class WizardViewModel : ObservableObject
 
         return Step switch
         {
-            0 => AgentName.Trim().Length > 0 && SwarmKeyReady,
-            1 => true,
+            0 => AgentName.Trim().Length is > 0 and <= 128 &&
+                 !AgentName.Any(char.IsControl) &&
+                 RunAsUser.Trim().Length > 0 && SwarmKeyReady,
+            1 => ControllerPeerId.Trim().Length == 0 ||
+                 AgentConfigService.IsValidPeerId(ControllerPeerId.Trim()),
             _ => false
         };
     }
 
     private void Next()
     {
-        if (Step == 1 && ControllerPeerId.Trim() == "*")
+        if (Step == 1 && ControllerPeerId.Trim().Length > 0 &&
+            !AgentConfigService.IsValidPeerId(ControllerPeerId.Trim()))
         {
             MessageBox.Show(
-                "通配符 \"*\" 会授权私有网络中的所有成员控制本机，仅适用于隔离测试环境，本程序不允许写入。",
-                "不允许的授权",
+                App.Localization.Text("AuthorizationPeerIdSuspicious"),
+                App.Localization.Text("AuthorizationTitle"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return;
@@ -269,8 +275,8 @@ public sealed class WizardViewModel : ObservableObject
     {
         var dialog = new OpenFileDialog
         {
-            Title = "选择 swarm.key",
-            Filter = "swarm.key|swarm.key|所有文件 (*.*)|*.*",
+            Title = App.Localization.Text("WizardPrivateNetworkKey"),
+            Filter = App.Localization.Text("FileFilterSwarmKey"),
             CheckFileExists = true
         };
 
@@ -319,23 +325,38 @@ public sealed class WizardViewModel : ObservableObject
                 AppPaths.DefaultMaxTransferBytes,
                 RunAsUser.Trim(),
                 !HasEmbeddedSwarmKey && SwarmKeyPath.Trim().Length > 0 ? SwarmKeyPath.Trim() : null,
-                HardenAcl);
+                true);
 
-            var progress = new Progress<InstallStep>(step => Steps.Add(step));
+            var progress = new Progress<InstallStep>(step => Steps.Add(InstallStepPresenter.Present(step)));
             var result = await _installer.InstallAsync(options, progress).ConfigureAwait(true);
 
-            Succeeded = result.All(s => s.Success);
+            Succeeded = result.Count > 0 &&
+                        result.All(s => s.Success) &&
+                        result.Any(s => s.Success &&
+                            string.Equals(s.Title, "启动并验证 Agent", StringComparison.Ordinal));
 
-            if (Succeeded && peerId.Length > 0 && ControllerNote.Trim().Length > 0)
+            if (Succeeded)
             {
                 var state = _uiState.Load();
-                state.PeerNotes[peerId] = ControllerNote.Trim();
-                _uiState.Save(state);
+                if (peerId.Length > 0 && ControllerNote.Trim().Length > 0)
+                    state.PeerNotes[peerId] = ControllerNote.Trim();
+                state.EffectiveAllowedPeers = allowedPeers.ToList();
+                state.EffectiveAllowedPeersKnown = true;
+                state.AuthorizationPendingRestart = false;
+                state.ConfigurationPendingRestart = false;
+                if (!_uiState.Save(state, out var noteError))
+                {
+                    MessageBox.Show(
+                        App.Localization.Format("DialogWizardStateSaveFailed", noteError ?? App.Localization.Text("CommonUnknown")),
+                        App.Localization.Text("ProductName"),
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
             }
         }
         catch (Exception ex)
         {
-            Steps.Add(new InstallStep("安装中断", false, ex.Message));
+            Steps.Add(InstallStepPresenter.Present(new InstallStep("安装中断", false, ex.Message)));
             Succeeded = false;
         }
         finally

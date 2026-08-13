@@ -1,266 +1,294 @@
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security;
-using System.Text;
+using System.Xml.Linq;
 
 namespace ZhanClawControl.Services;
 
-public enum TaskState
-{
-    NotInstalled,
-    Ready,
-    Running,
-    Disabled,
-    Unknown
-}
+public enum TaskState { NotInstalled, Ready, Running, Disabled, Unknown }
+public sealed record ScheduledTaskInspection(bool Exists, bool MatchesExpectedDefinition, string RunAsUser,
+    string RawXml, IReadOnlyList<string> Issues, bool QueryFailed = false, string QueryError = "");
 
 /// <summary>
-/// 通过 schtasks.exe 管理名为 "P2P Agent" 的登录时计划任务。
-/// 不引入 NuGet 依赖；任务定义用 XML 提交，可完整控制 LogonType / RunLevel / 重启策略。
+/// Uses Task Scheduler COM, avoiding localized console output and mutable XML files. Cancellation is
+/// checked before each COM mutation; a mutation already submitted is observed to completion so its
+/// result is never reported ambiguously.
 /// </summary>
 public sealed class ScheduledTaskService
 {
-    private static string SchTasks => ProcessRunner.SystemPath("schtasks.exe");
+    private const int TaskCreateOrUpdate = 6;
+    private const int TaskLogonInteractiveToken = 3;
+    private const int HResultFileNotFound = unchecked((int)0x80070002);
+    private const int SchedEUnknownObject = unchecked((int)0x8004130F);
 
-    public async Task<TaskState> GetStateAsync(CancellationToken ct = default)
+    public Task<TaskState> GetStateAsync(CancellationToken ct = default)
     {
-        var result = await ProcessRunner
-            .RunAsync(SchTasks, new[] { "/Query", "/TN", AppPaths.ScheduledTaskName, "/FO", "LIST" }, 20_000, ct)
-            .ConfigureAwait(false);
-
-        if (!result.Success)
-        {
-            return TaskState.NotInstalled;
-        }
-
-        var text = result.StdOut;
-
-        // schtasks 输出随系统语言变化，因此同时匹配中英文状态词
-        if (Contains(text, "Running") || Contains(text, "正在运行"))
-        {
-            return TaskState.Running;
-        }
-
-        if (Contains(text, "Disabled") || Contains(text, "已禁用"))
-        {
-            return TaskState.Disabled;
-        }
-
-        if (Contains(text, "Ready") || Contains(text, "就绪") || Contains(text, "准备就绪"))
-        {
-            return TaskState.Ready;
-        }
-
-        return TaskState.Unknown;
-    }
-
-    private static bool Contains(string haystack, string needle) =>
-        haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Agent 进程是否真的在跑（计划任务状态不足以判断）。</summary>
-    public static bool IsAgentProcessRunning()
-    {
+        ct.ThrowIfCancellationRequested();
         try
         {
-            return Process.GetProcessesByName("p2p-agent").Any();
+            return Task.FromResult(WithTask(task => (int)task.State switch
+            {
+                1 => TaskState.Disabled, 3 => TaskState.Ready, 4 => TaskState.Running, _ => TaskState.Unknown
+            }));
         }
-        catch
+        catch (COMException ex) when (IsTaskNotFound(ex)) { return Task.FromResult(TaskState.NotInstalled); }
+        catch { return Task.FromResult(TaskState.Unknown); }
+    }
+
+    public Task<ScheduledTaskInspection> InspectAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        string xml;
+        try { xml = WithTask(task => (string)task.Xml); }
+        catch (COMException ex) when (IsTaskNotFound(ex))
         {
-            return false;
+            return Task.FromResult(new ScheduledTaskInspection(false, false, "", "", new[] { "计划任务不存在。" }));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(new ScheduledTaskInspection(true, false, "", "",
+                new[] { "计划任务查询失败，无法证明其不存在。" }, true, ex.Message));
+        }
+
+        var issues = new List<string>();
+        try
+        {
+            var document = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
+            var root = document.Root ?? throw new InvalidDataException("任务 XML 缺少根元素。");
+            var ns = root.Name.Namespace;
+            var principals = root.Element(ns + "Principals")?.Elements().ToList() ?? new();
+            var principal = principals.Count == 1 && principals[0].Name == ns + "Principal" ? principals[0] : null;
+            var runAsUser = Value(principal, ns, "UserId");
+            if (principal is null) issues.Add("Principal 数量或类型不是精确的 1 个。");
+            if (runAsUser.Length == 0) issues.Add("任务缺少 UserId。");
+            Expect(Value(principal, ns, "LogonType"), "InteractiveToken", "LogonType", issues);
+            Expect(Value(principal, ns, "RunLevel"), "LeastPrivilege", "RunLevel", issues);
+
+            var triggers = root.Element(ns + "Triggers")?.Elements().ToList() ?? new();
+            var logon = triggers.Count == 1 && triggers[0].Name == ns + "LogonTrigger" ? triggers[0] : null;
+            if (logon is null) issues.Add("Triggers 必须只包含 1 个 LogonTrigger。");
+            if (!SameAccount(runAsUser, Value(logon, ns, "UserId"))) issues.Add("Trigger UserId 与 Principal UserId 不一致。");
+            Expect(Value(logon, ns, "Enabled"), "true", "LogonTrigger.Enabled", issues);
+
+            var actionsNode = root.Element(ns + "Actions");
+            var actions = actionsNode?.Elements().ToList() ?? new();
+            var exec = actions.Count == 1 && actions[0].Name == ns + "Exec" ? actions[0] : null;
+            if (exec is null) issues.Add("Actions 必须只包含 1 个 Exec。");
+            if (!string.Equals(actionsNode?.Attribute("Context")?.Value, "Author", StringComparison.Ordinal)) issues.Add("Actions Context 不是 Author。");
+            if (!PathsEqual(Value(exec, ns, "Command"), AppPaths.ControlExe)) issues.Add("Command 未精确指向安装目录后台宿主。");
+            if (!string.Equals(Value(exec, ns, "Arguments"), AgentHost.Switch, StringComparison.Ordinal)) issues.Add("Arguments 不是精确的 --run-agent。");
+            if (!PathsEqual(Value(exec, ns, "WorkingDirectory"), AppPaths.InstallRoot)) issues.Add("WorkingDirectory 不是安装目录。");
+
+            var settings = root.Element(ns + "Settings");
+            var enabledText = Value(settings, ns, "Enabled");
+            if (!string.Equals(enabledText, "true", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(enabledText, "false", StringComparison.OrdinalIgnoreCase))
+                issues.Add("Settings.Enabled 不是合法布尔值。");
+            Expect(Value(settings, ns, "AllowStartOnDemand"), "true", "AllowStartOnDemand", issues);
+            Expect(Value(settings, ns, "MultipleInstancesPolicy"), "IgnoreNew", "MultipleInstancesPolicy", issues);
+            Expect(Value(settings, ns, "DisallowStartIfOnBatteries"), "false", "DisallowStartIfOnBatteries", issues);
+            Expect(Value(settings, ns, "StopIfGoingOnBatteries"), "false", "StopIfGoingOnBatteries", issues);
+            Expect(Value(settings, ns, "AllowHardTerminate"), "true", "AllowHardTerminate", issues);
+            Expect(Value(settings, ns, "StartWhenAvailable"), "true", "StartWhenAvailable", issues);
+            Expect(Value(settings, ns, "RunOnlyIfNetworkAvailable"), "false", "RunOnlyIfNetworkAvailable", issues);
+            Expect(Value(settings, ns, "WakeToRun"), "false", "WakeToRun", issues);
+            Expect(Value(settings, ns, "ExecutionTimeLimit"), "PT0S", "ExecutionTimeLimit", issues);
+            Expect(Value(settings, ns, "Priority"), "7", "Priority", issues);
+            Expect(Value(settings, ns, "Hidden"), "false", "Hidden", issues);
+            Expect(Value(settings, ns, "RunOnlyIfIdle"), "false", "RunOnlyIfIdle", issues);
+            Expect(Value(settings, ns, "DisallowStartOnRemoteAppSession"), "false", "DisallowStartOnRemoteAppSession", issues);
+            Expect(Value(settings, ns, "UseUnifiedSchedulingEngine"), "true", "UseUnifiedSchedulingEngine", issues);
+            var idle = settings?.Element(ns + "IdleSettings");
+            Expect(Value(idle, ns, "StopOnIdleEnd"), "false", "IdleSettings.StopOnIdleEnd", issues);
+            Expect(Value(idle, ns, "RestartOnIdle"), "false", "IdleSettings.RestartOnIdle", issues);
+            var restart = settings?.Element(ns + "RestartOnFailure");
+            Expect(Value(restart, ns, "Interval"), "PT1M", "RestartOnFailure.Interval", issues);
+            Expect(Value(restart, ns, "Count"), "3", "RestartOnFailure.Count", issues);
+            return Task.FromResult(new ScheduledTaskInspection(true, issues.Count == 0, runAsUser, xml, issues));
+        }
+        catch (Exception ex)
+        {
+            issues.Add($"任务 XML 无法解析：{ex.Message}");
+            return Task.FromResult(new ScheduledTaskInspection(true, false, "", xml, issues));
         }
     }
 
     public async Task<ProcessResult> RegisterAsync(string runAsUser, CancellationToken ct = default)
     {
-        var xml = BuildTaskXml(runAsUser);
-        var tempPath = Path.Combine(Path.GetTempPath(), $"zhanclaw-task-{Guid.NewGuid():N}.xml");
-
-        // schtasks /XML 要求 UTF-16 LE with BOM
-        await File.WriteAllTextAsync(tempPath, xml, new UnicodeEncoding(false, true), ct).ConfigureAwait(false);
-
-        try
-        {
-            return await ProcessRunner.RunAsync(
-                SchTasks,
-                new[] { "/Create", "/TN", AppPaths.ScheduledTaskName, "/XML", tempPath, "/F" },
-                60_000,
-                ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(tempPath);
-            }
-            catch
-            {
-                // 忽略
-            }
-        }
+        var sid = RuntimeSecurityService.ResolveAccountSid(runAsUser).Value;
+        var result = await RegisterXmlAsync(BuildTaskXml(sid), ct).ConfigureAwait(false);
+        if (!result.Success) return result;
+        var inspection = await InspectAsync(ct).ConfigureAwait(false);
+        return inspection.MatchesExpectedDefinition ? result : Failure("任务已创建，但精确定义校验失败：" + string.Join("；", inspection.Issues));
     }
 
-    public Task<ProcessResult> StartAsync(CancellationToken ct = default) =>
-        ProcessRunner.RunAsync(SchTasks, new[] { "/Run", "/TN", AppPaths.ScheduledTaskName }, 30_000, ct);
+    public Task<ProcessResult> RegisterXmlAsync(string xml, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            var userId = ReadPrincipalUserId(xml);
+            WithFolder(folder =>
+            {
+                object? registered = null;
+                try { registered = folder.RegisterTask(AppPaths.ScheduledTaskName, xml, TaskCreateOrUpdate, userId, null, TaskLogonInteractiveToken, null); }
+                finally { ReleaseCom(registered); }
+                return 0;
+            });
+            return Task.FromResult(Success("Task Scheduler COM registration completed."));
+        }
+        catch (Exception ex) { return Task.FromResult(Failure(ex.Message)); }
+    }
+
+    public async Task<ProcessResult> StartAsync(CancellationToken ct = default)
+    {
+        var inspection = await InspectAsync(ct).ConfigureAwait(false);
+        if (inspection.QueryFailed || !inspection.Exists || !inspection.MatchesExpectedDefinition)
+            return Failure("拒绝启动未通过精确定义校验的同名任务：" + string.Join("；",
+                inspection.Issues.Append(inspection.QueryError).Where(x => !string.IsNullOrWhiteSpace(x))));
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var initiallyEnabled = ReadTaskEnabled(inspection.RawXml);
+            WithTask(task =>
+            {
+                object? running = null;
+                try
+                {
+                    // A manual start is allowed while login autostart is disabled. Temporarily enable
+                    // only for the COM Run submission, then restore the stored preference immediately.
+                    if (!initiallyEnabled) task.Enabled = true;
+                    running = task.Run(null);
+                }
+                finally
+                {
+                    ReleaseCom(running);
+                    if (!initiallyEnabled) task.Enabled = false;
+                }
+                return 0;
+            });
+        }
+        catch (Exception ex) { return Failure(ex.Message); }
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (IsExactProcessRunning("ZhanClawControl", AppPaths.ControlExe) || IsAgentProcessRunning()) return Success("Task started.");
+            await Task.Delay(200, ct).ConfigureAwait(false);
+        }
+        return Failure("任务运行命令已接受，但 10 秒内未出现本产品宿主或 Agent 进程。");
+    }
 
     public async Task<ProcessResult> StopAsync(CancellationToken ct = default)
     {
-        var result = await ProcessRunner
-            .RunAsync(SchTasks, new[] { "/End", "/TN", AppPaths.ScheduledTaskName }, 30_000, ct)
-            .ConfigureAwait(false);
-
-        // /End 只结束任务实例；启动器是 cmd.exe，Agent 可能成为孤儿，需要显式收尾
-        KillAgentProcesses();
-        return result;
+        var errors = new List<string>();
+        try { ct.ThrowIfCancellationRequested(); WithTask(task => { task.Stop(0); return 0; }); }
+        catch (COMException ex) when (IsTaskNotFound(ex)) { }
+        catch (Exception ex) { errors.Add("停止计划任务失败：" + ex.Message); }
+        var kill = KillAgentProcesses();
+        if (!kill.Success) errors.Add(kill.CombinedOutput);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline && AnyProductProcessRunning()) { ct.ThrowIfCancellationRequested(); await Task.Delay(150, ct).ConfigureAwait(false); }
+        if (AnyProductProcessRunning()) errors.Add("本产品 Agent/宿主进程仍在运行。");
+        return errors.Count == 0 ? Success("Task and product processes stopped.") : Failure(string.Join(Environment.NewLine, errors));
     }
 
-    public Task<ProcessResult> DeleteAsync(CancellationToken ct = default) =>
-        ProcessRunner.RunAsync(SchTasks, new[] { "/Delete", "/TN", AppPaths.ScheduledTaskName, "/F" }, 30_000, ct);
-
-    public Task<ProcessResult> SetEnabledAsync(bool enabled, CancellationToken ct = default) =>
-        ProcessRunner.RunAsync(
-            SchTasks,
-            new[] { "/Change", "/TN", AppPaths.ScheduledTaskName, enabled ? "/ENABLE" : "/DISABLE" },
-            30_000,
-            ct);
-
-    /// <summary>
-    /// 结束 Agent 与宿主进程。schtasks /End 只结束任务实例，
-    /// 宿主被终止后 p2p-agent 可能成为孤儿，因此显式收尾。
-    /// </summary>
-    public static void KillAgentProcesses()
+    public Task<ProcessResult> DeleteAsync(CancellationToken ct = default)
     {
-        KillHostProcesses();
+        ct.ThrowIfCancellationRequested();
+        try { WithFolder(folder => { folder.DeleteTask(AppPaths.ScheduledTaskName, 0); return 0; }); return Task.FromResult(Success("Task deleted.")); }
+        catch (COMException ex) when (IsTaskNotFound(ex)) { return Task.FromResult(Success("Task was already absent.")); }
+        catch (Exception ex) { return Task.FromResult(Failure(ex.Message)); }
+    }
 
-        foreach (var process in Process.GetProcessesByName("p2p-agent"))
+    public async Task<ProcessResult> SetEnabledAsync(bool enabled, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (enabled)
         {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5_000);
-            }
-            catch
-            {
-                // 权限不足或已退出
-            }
-            finally
-            {
-                process.Dispose();
-            }
+            var inspection = await InspectAsync(ct).ConfigureAwait(false);
+            if (inspection.QueryFailed || !inspection.Exists || !inspection.MatchesExpectedDefinition)
+                return Failure("拒绝启用未通过精确定义校验的同名任务：" + string.Join("；", inspection.Issues));
         }
+        try { WithTask(task => { task.Enabled = enabled; return 0; }); return Success("Task state updated."); }
+        catch (Exception ex) { return Failure(ex.Message); }
     }
 
-    /// <summary>
-    /// 任务执行的是本程序的 --run-agent 宿主模式，而不是直接执行 p2p-agent.exe。
-    /// p2p-agent.exe 是 CONSOLE 子系统程序，直接由计划任务启动会弹出黑窗；
-    /// 本程序是 WinExe，以 CreateNoWindow 拉起 Agent 既无窗口，又能捕获其 stdout/stderr 写入日志。
-    ///
-    /// 注意：taskSettingsType 的子元素顺序由 XSD 的 sequence 约束，
-    /// 顺序不对会被 schtasks /XML 拒绝，因此下面的 Settings 严格按 schema 顺序排列。
-    /// </summary>
-    /// <summary>
-    /// 结束以 --run-agent 启动的宿主实例。
-    ///
-    /// 判定依据是可执行文件路径等于安装目录下的副本：单实例互斥量保证 GUI 只有一个，
-    /// 即当前进程；因此路径匹配且非当前进程的，只可能是计划任务拉起的宿主。
-    /// 不使用 WMI 读命令行，避免引入 System.Management 包依赖。
-    /// </summary>
-    private static void KillHostProcesses()
+    public static bool IsAgentProcessRunning() => IsExactProcessRunning("p2p-agent", AppPaths.AgentExe);
+    public static ProcessResult KillAgentProcesses()
     {
-        var self = Environment.ProcessId;
+        var errors = new List<string>();
+        KillExactProcesses("ZhanClawControl", AppPaths.ControlExe, errors); KillExactProcesses("p2p-agent", AppPaths.AgentExe, errors);
+        return errors.Count == 0 ? Success("") : Failure(string.Join(Environment.NewLine, errors));
+    }
 
-        foreach (var process in Process.GetProcessesByName("ZhanClawControl"))
+    private static T WithTask<T>(Func<dynamic, T> action) => WithFolder(folder =>
+    {
+        object? task = null;
+        try { task = folder.GetTask(AppPaths.ScheduledTaskName); return action((dynamic)task); }
+        finally { ReleaseCom(task); }
+    });
+    private static T WithFolder<T>(Func<dynamic, T> action)
+    {
+        object? service = null; object? folder = null;
+        try
         {
-            try
-            {
-                if (process.Id == self)
-                {
-                    continue;
-                }
-
-                var path = process.MainModule?.FileName;
-                if (path is null ||
-                    !string.Equals(path, AppPaths.ControlExe, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5_000);
-            }
-            catch
-            {
-                // 权限不足、已退出，或无法读取模块信息
-            }
-            finally
-            {
-                process.Dispose();
-            }
+            var type = Type.GetTypeFromProgID("Schedule.Service", throwOnError: true) ?? throw new PlatformNotSupportedException("Task Scheduler COM unavailable.");
+            service = Activator.CreateInstance(type) ?? throw new COMException("Cannot create Task Scheduler COM service.");
+            ((dynamic)service).Connect(); folder = ((dynamic)service).GetFolder("\\"); return action((dynamic)folder);
         }
+        finally { ReleaseCom(folder); ReleaseCom(service); }
     }
-
-    private static string BuildTaskXml(string runAsUser)
+    private static void ReleaseCom(object? value) { if (value is not null && Marshal.IsComObject(value)) try { Marshal.FinalReleaseComObject(value); } catch { } }
+    private static bool IsTaskNotFound(COMException ex) => ex.HResult is HResultFileNotFound or SchedEUnknownObject;
+    private static string ReadPrincipalUserId(string xml)
     {
-        var user = SecurityElement.Escape(runAsUser) ?? runAsUser;
-        var command = SecurityElement.Escape(AppPaths.ControlExe) ?? AppPaths.ControlExe;
-        var arguments = SecurityElement.Escape(AgentHost.Switch) ?? AgentHost.Switch;
-        // 与官方安装脚本一致：工作目录取程序目录
-        var workingDir = SecurityElement.Escape(AppPaths.InstallRoot) ?? AppPaths.InstallRoot;
-        var now = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+        var doc = XDocument.Parse(xml); var root = doc.Root ?? throw new InvalidDataException("任务 XML 缺少根元素。"); var ns = root.Name.Namespace;
+        var users = root.Element(ns + "Principals")?.Elements(ns + "Principal").Select(p => Value(p, ns, "UserId")).Where(x => x.Length > 0).ToList() ?? new();
+        if (users.Count != 1) throw new InvalidDataException("任务 XML 必须含唯一 Principal/UserId。"); return users[0];
+    }
+    public static bool ReadTaskEnabled(string xml)
+    {
+        var doc = XDocument.Parse(xml); var root = doc.Root ?? throw new InvalidDataException("任务 XML 缺少根元素。"); var ns = root.Name.Namespace;
+        return Value(root.Element(ns + "Settings"), ns, "Enabled") switch
+        {
+            var value when string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) => true,
+            var value when string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) => false,
+            _ => throw new InvalidDataException("Settings.Enabled 不是合法布尔值。")
+        };
+    }
+    private static string Value(XElement? parent, XNamespace ns, string name) => parent?.Element(ns + name)?.Value.Trim() ?? "";
+    private static void Expect(string actual, string expected, string field, ICollection<string> issues) { if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) issues.Add($"{field} 不是 {expected}。"); }
+    private static bool AnyProductProcessRunning() => IsExactProcessRunning("ZhanClawControl", AppPaths.ControlExe) || IsAgentProcessRunning();
+    private static void KillExactProcesses(string name, string expectedPath, ICollection<string> errors)
+    {
+        foreach (var process in Process.GetProcessesByName(name)) try { if (process.Id != Environment.ProcessId && IsProcessAtPath(process, expectedPath)) { process.Kill(true); if (!process.WaitForExit(5_000)) errors.Add($"进程未在超时内退出：{expectedPath} pid={process.Id}"); } } catch (Exception ex) { errors.Add($"结束进程失败：{expectedPath} pid={process.Id}：{ex.Message}"); } finally { process.Dispose(); }
+    }
+    private static bool IsExactProcessRunning(string name, string expectedPath)
+    {
+        foreach (var process in Process.GetProcessesByName(name)) try { if (process.Id != Environment.ProcessId && IsProcessAtPath(process, expectedPath)) return true; } catch { } finally { process.Dispose(); }
+        return false;
+    }
+    private static bool IsProcessAtPath(Process process, string path) => process.MainModule?.FileName is { } actual && PathsEqual(actual, path);
+    private static bool PathsEqual(string left, string right) { try { return string.Equals(Path.GetFullPath(left).TrimEnd('\\', '/'), Path.GetFullPath(right).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase); } catch { return false; } }
+    private static bool SameAccount(string left, string right) { if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true; try { return RuntimeSecurityService.ResolveAccountSid(left).Equals(RuntimeSecurityService.ResolveAccountSid(right)); } catch { return false; } }
+    private static ProcessResult Success(string output) => new(0, output, "");
+    private static ProcessResult Failure(string error) => new(-1, "", error);
 
+    private static string BuildTaskXml(string runAsSid)
+    {
+        var user = SecurityElement.Escape(runAsSid) ?? runAsSid; var command = SecurityElement.Escape(AppPaths.ControlExe) ?? AppPaths.ControlExe;
+        var args = SecurityElement.Escape(AgentHost.Switch) ?? AgentHost.Switch; var dir = SecurityElement.Escape(AppPaths.InstallRoot) ?? AppPaths.InstallRoot;
         return $"""
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Date>{now}</Date>
-    <Author>ZhanClawControl</Author>
-    <Description>{AppInfo.ProductName} - 后台进程</Description>
-    <URI>\{AppPaths.ScheduledTaskName}</URI>
-  </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <UserId>{user}</UserId>
-    </LogonTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>{user}</UserId>
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
-    </RestartOnFailure>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
-    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{command}</Command>
-      <Arguments>{arguments}</Arguments>
-      <WorkingDirectory>{workingDir}</WorkingDirectory>
-    </Exec>
-  </Actions>
+  <RegistrationInfo><Date>{DateTime.UtcNow.ToString("s", CultureInfo.InvariantCulture)}Z</Date><Author>ZhanClawControl</Author><Description>{AppInfo.ProductName} - 后台进程</Description><URI>\{AppPaths.ScheduledTaskName}</URI></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings><AllowStartOnDemand>true</AllowStartOnDemand><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession><UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine></Settings>
+  <Actions Context="Author"><Exec><Command>{command}</Command><Arguments>{args}</Arguments><WorkingDirectory>{dir}</WorkingDirectory></Exec></Actions>
 </Task>
 """;
     }

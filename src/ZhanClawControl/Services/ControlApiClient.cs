@@ -34,8 +34,8 @@ public sealed record PeerEntry(
 /// <summary>
 /// 只访问回环 Control API 的两个只读端点。被控端不需要四个 Primitive。
 ///
-/// 注意：/v1/info 与 /v1/peers 的确切 JSON 字段名未在 ARCHITECTURE.md 中给出，
-/// 因此这里对多个候选字段名做容错探测，并保留原始 JSON 供诊断页显示。
+    /// 注意：附件没有 Agent API 的版本化 schema 源文件，因此这里对已观察到的字段名
+    /// 和兼容候选做容错探测，并保留原始 JSON 供显式完整诊断使用。
 /// 若后续 Agent 版本变更字段名，只需在 PickString 的候选列表里补一项。
 /// </summary>
 public sealed class ControlApiClient : IDisposable
@@ -58,20 +58,53 @@ public sealed class ControlApiClient : IDisposable
         };
     }
 
-    /// <summary>TCP 层探测，比 HTTP 请求快，用于频繁的存活轮询。</summary>
+    /// <summary>
+    /// TCP 层异步探测，比 HTTP 请求快，用于频繁的存活轮询。
+    /// 调用方取消会向上传播；只有探测自身超时或连接失败时返回 false。
+    /// </summary>
+    public static async Task<bool> IsPortOpenAsync(
+        int timeoutMs = 500,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        using var client = new TcpClient();
+        using var timeoutCts = new CancellationTokenSource();
+        if (timeoutMs != Timeout.Infinite)
+        {
+            timeoutCts.CancelAfter(timeoutMs);
+        }
+
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        try
+        {
+            await client
+                .ConnectAsync(AppPaths.ApiHost, AppPaths.ApiPort, connectCts.Token)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 同步兼容入口。新异步调用方应使用 <see cref="IsPortOpenAsync"/>，避免阻塞 UI 线程。
+    /// </summary>
     public static bool IsPortOpen(int timeoutMs = 500)
     {
         try
         {
-            using var client = new TcpClient();
-            var async = client.BeginConnect(AppPaths.ApiHost, AppPaths.ApiPort, null, null);
-            if (!async.AsyncWaitHandle.WaitOne(timeoutMs, false))
-            {
-                return false;
-            }
-
-            client.EndConnect(async);
-            return true;
+            return IsPortOpenAsync(timeoutMs).GetAwaiter().GetResult();
         }
         catch
         {
@@ -149,6 +182,10 @@ public sealed class ControlApiClient : IDisposable
                 PickStringArray(root, "listen_addresses", "addresses", "addrs"),
                 Prettify(json));
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             return null;
@@ -162,6 +199,10 @@ public sealed class ControlApiClient : IDisposable
         {
             var json = await GetAsync("/v1/peers", ct).ConfigureAwait(false);
             return json is null ? null : Prettify(json);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -211,6 +252,10 @@ public sealed class ControlApiClient : IDisposable
                     result.Add(new PeerEntry(peerId, name, path, scope));
                 }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

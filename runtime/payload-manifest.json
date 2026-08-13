@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "file_name": "p2p-agent.exe",
+  "sha256": "a2b36af5f2623ddd2f91d223f471abe9d8d957fb2dca6a566e02b2dbd04dd5e9",
+  "version": "0.1.0-integration.4",
+  "pe_machine": "amd64",
+  "pe_subsystem": "console",
+  "require_authenticode_valid": true,
+  "expected_signer_common_name": "StarSoftComm(China) Ltd.",
+  "expected_leaf_certificate_sha256": "A8531CBDD8D6AF1F8CC8C5DCD2D4775125ACBB1BD2D408E6815140359F6A9973",
+  "expected_spki_sha256": "1996629E8D0F783D9DD35C77FBEAFC0DC8BFFAF64CEF9E48528C4E09642D42F2"
+  ,"trusted_rollback_spki_sha256": [
+    "1996629E8D0F783D9DD35C77FBEAFC0DC8BFFAF64CEF9E48528C4E09642D42F2"
+  ]
+}

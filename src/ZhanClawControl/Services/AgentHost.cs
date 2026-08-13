@@ -34,6 +34,8 @@ public static class AgentHost
             // 日志目录不可写时仍要尝试启动 Agent
         }
 
+        // 日志只能在写句柄打开前滚动。打开后不共享 Delete/Write，避免 GUI 把仍在写入的
+        // agent.log 重命名或截断，导致宿主继续向已改名文件写入。
         RollLogIfNeeded();
 
         StreamWriter? writer = null;
@@ -44,7 +46,7 @@ public static class AgentHost
                     AppPaths.AgentLogFile,
                     FileMode.Append,
                     FileAccess.Write,
-                    FileShare.ReadWrite | FileShare.Delete),
+                    FileShare.Read),
                 new UTF8Encoding(false))
             {
                 AutoFlush = true
@@ -95,6 +97,21 @@ public static class AgentHost
             return 3;
         }
 
+        try
+        {
+            RuntimeSecurityService.ValidateRuntimeSecretsForCurrentUser();
+            var config = new AgentConfigService().Load();
+            AgentConfigService.ValidateRuntimeBoundary(config);
+            RuntimeSecurityService.ValidateSwarmKey(AppPaths.SwarmKeyFile);
+            await RuntimeSecurityService.ValidateAgentPayloadAsync(AppPaths.AgentExe, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log("[host]", $"runtime security validation failed: {ex.GetType().Name}: {ex.Message}");
+            writer?.Dispose();
+            return 7;
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = AppPaths.AgentExe,
@@ -133,8 +150,16 @@ public static class AgentHost
         try
         {
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            Log("[host]", $"agent exited with code {process.ExitCode}");
-            return process.ExitCode;
+            var agentExitCode = process.ExitCode;
+            // Agent 是常驻进程；在宿主未被取消的情况下，即使子进程自报 0，退出本身也属于异常，
+            // 必须让任务计划程序的 RestartOnFailure 生效。真实非零退出码保持不变。
+            var hostExitCode = agentExitCode == 0 ? 6 : agentExitCode;
+            Log(
+                "[host]",
+                agentExitCode == 0
+                    ? "agent exited unexpectedly with code 0; host maps it to code 6 for restart policy"
+                    : $"agent exited with code {agentExitCode}");
+            return hostExitCode;
         }
         catch (OperationCanceledException)
         {
@@ -170,7 +195,9 @@ public static class AgentHost
         }
     }
 
-    /// <summary>宿主启动时滚动日志，避免与 GUI 侧争抢文件句柄。</summary>
+    /// <summary>
+    /// 仅在宿主打开写句柄前滚动日志。运行期间的滚动被文件共享模式明确禁止。
+    /// </summary>
     private static void RollLogIfNeeded()
     {
         try

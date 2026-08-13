@@ -4,6 +4,17 @@
     <CornerRadius x:Key="CardCornerRadius" TopLeft="8" TopRight="8" BottomLeft="8" BottomRight="8" />
     <CornerRadius x:Key="ControlCornerRadius" TopLeft="6" TopRight="6" BottomLeft="6" BottomRight="6" />
 
+    <Style x:Key="KeyboardFocusVisual" TargetType="Control">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate>
+                    <Border BorderBrush="{DynamicResource BrandBrush}" BorderThickness="2" CornerRadius="7"
+                            Margin="-3" SnapsToDevicePixels="True" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="CaptionText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
         <Setter Property="FontSize" Value="12" />
@@ -30,7 +41,7 @@
     </Style>
 
     <Style x:Key="MonoText" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Consolas, Cascadia Mono, Courier New" />
+        <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="TextWrapping" Value="Wrap" />
@@ -40,7 +51,7 @@
     <Style x:Key="Card" TargetType="Border">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
         <Setter Property="Padding" Value="16" />
         <Setter Property="Margin" Value="0,0,0,12" />
@@ -57,6 +68,7 @@
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -88,9 +100,9 @@
 
     <!-- 主按钮（品牌色） -->
     <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-        <Setter Property="Background" Value="{DynamicResource BrandBrush}" />
+        <Setter Property="Background" Value="{DynamicResource BrandFillBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource OnBrandBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource BrandBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BrandFillBrush}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -136,6 +148,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6" />
         <Setter Property="FontSize" Value="13" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}" />
         <Setter Property="SelectionBrush" Value="{DynamicResource BrandBrush}" />
         <Setter Property="Template">
             <Setter.Value>
@@ -147,7 +160,7 @@
                             CornerRadius="{StaticResource ControlCornerRadius}">
                         <ScrollViewer x:Name="PART_ContentHost"
                                       Margin="{TemplateBinding Padding}"
-                                      VerticalAlignment="Center" />
+                                      VerticalAlignment="Stretch" />
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
@@ -166,6 +179,15 @@
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}" />
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{DynamicResource ControlBackgroundBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}" />
     </Style>
 
     <Style TargetType="TextBlock">
@@ -190,6 +212,7 @@
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusVisual}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ListBoxItem">

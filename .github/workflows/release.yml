@@ -12,16 +12,18 @@ on:
         default: '1.0.0'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Verify and build unsigned artifact
     runs-on: windows-latest
-
-    env:
-      # 未在仓库 Secrets 中配置时为空字符串，下方注入步骤会自动跳过
-      SWARM_KEY_B64: ${{ secrets.SWARM_KEY_B64 }}
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      fileversion: ${{ steps.version.outputs.fileversion }}
+      unsigned_sha256: ${{ steps.unsigned_hash.outputs.sha256 }}
 
     steps:
       - name: Checkout
@@ -35,26 +37,30 @@ jobs:
       - name: Resolve version
         id: version
         shell: pwsh
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
           } else {
-            $version = '${{ github.event.inputs.version }}'
+            $version = $env:VERSION_INPUT
           }
           if ([string]::IsNullOrWhiteSpace($version)) { $version = '1.0.0' }
 
-          # AssemblyVersion 只接受四段数字，剥掉预发布后缀
+          # AssemblyVersion 只接受恰好四段数字，剥掉预发布后缀并补零。
           $numeric = ($version -split '-')[0]
-          if ($numeric -notmatch '^\d+(\.\d+){0,3}$') {
+          if ($numeric -notmatch '^\d+(\.\d+){0,3}$' -or $version -notmatch '^\d+(\.\d+){0,3}([0-9A-Za-z-][0-9A-Za-z.-]*)?$') {
             Write-Error "版本号格式无效：$version"
             exit 1
           }
-          while (($numeric -split '\.').Count -lt 3) { $numeric = "$numeric.0" }
+          $parts = @($numeric -split '\.')
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $fileVersion = $parts -join '.'
 
           "version=$version"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "numeric=$numeric"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "fileversion=$numeric.0"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "版本：$version（程序集 $numeric.0）"
+          "fileversion=$fileVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "版本：$version（程序集 $fileVersion）"
 
       - name: Verify agent payload present
         shell: pwsh
@@ -68,29 +74,31 @@ jobs:
       # swarm.key 优先取仓库内的 runtime/swarm.key；
       # 仓库内没有但配置了 SWARM_KEY_B64 Secret 时，从 Secret 写出到同一路径。
       - name: Inject swarm.key from secret (fallback)
-        if: env.SWARM_KEY_B64 != ''
+        if: ${{ hashFiles('runtime/swarm.key') == '' }}
+        env:
+          # 仅当仓库没有 key 时，这一步才启动且 Secret 才进入进程环境。
+          SWARM_KEY_B64: ${{ secrets.SWARM_KEY_B64 }}
         shell: pwsh
         run: |
-          if (Test-Path 'runtime/swarm.key') {
-            Write-Host '仓库已包含 runtime/swarm.key，忽略 Secret。'
-          } else {
-            [IO.File]::WriteAllBytes(
-              'runtime/swarm.key',
-              [Convert]::FromBase64String($env:SWARM_KEY_B64))
-            Write-Host '已从 Secret 写出 runtime/swarm.key'
+          if ([string]::IsNullOrWhiteSpace($env:SWARM_KEY_B64)) {
+            Write-Error '正式发布必须提供 runtime/swarm.key 或 SWARM_KEY_B64 Secret。'
+            exit 1
           }
+          [IO.File]::WriteAllBytes(
+            'runtime/swarm.key',
+            [Convert]::FromBase64String($env:SWARM_KEY_B64))
+          Write-Host '已从 Secret 写出 runtime/swarm.key'
 
       - name: Confirm swarm.key embedded
         shell: pwsh
         run: |
-          if (Test-Path 'runtime/swarm.key') {
-            Write-Host 'swarm.key 将内置进安装包：安装向导免选。'
-          } else {
-            Write-Warning '未找到 swarm.key：发布的安装包将要求用户手动选择该文件。'
-          }
+          ./scripts/Test-Payload.ps1 -RequireSwarmKey
 
       - name: Publish
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_FILE_VERSION: ${{ steps.version.outputs.fileversion }}
         run: |
           dotnet publish src/ZhanClawControl/ZhanClawControl.csproj `
             --configuration Release `
@@ -99,18 +107,136 @@ jobs:
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:Version=${{ steps.version.outputs.version }} `
-            -p:AssemblyVersion=${{ steps.version.outputs.fileversion }} `
-            -p:FileVersion=${{ steps.version.outputs.fileversion }} `
+            -p:Version=$env:RELEASE_VERSION `
+            -p:AssemblyVersion=$env:RELEASE_FILE_VERSION `
+            -p:FileVersion=$env:RELEASE_FILE_VERSION `
             --output artifacts/publish
+
+      - name: Hash unsigned artifact
+        id: unsigned_hash
+        shell: pwsh
+        run: |
+          $path = 'artifacts/publish/ZhanClawControl.exe'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Publish did not produce the expected single executable: $path"
+          }
+          $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Unsigned artifact SHA-256: $hash"
+
+      # 只传递待签的单文件 EXE。此 job 没有 contents:write，也不接触签名 PFX/password；
+      # Test-Payload 是纯静态验证，不会执行内嵌 Agent。
+      - name: Upload unsigned executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: zhanclaw-control-unsigned
+          path: artifacts/publish/ZhanClawControl.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Sign and publish release
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout release metadata
+        uses: actions/checkout@v5
+
+      - name: Download unsigned executable
+        uses: actions/download-artifact@v4
+        with:
+          name: zhanclaw-control-unsigned
+          path: artifacts/publish
+
+      - name: Verify artifact handoff
+        shell: pwsh
+        env:
+          EXPECTED_UNSIGNED_SHA256: ${{ needs.build.outputs.unsigned_sha256 }}
+        run: |
+          $path = 'artifacts/publish/ZhanClawControl.exe'
+          if ($env:EXPECTED_UNSIGNED_SHA256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Build job did not provide a valid unsigned artifact hash.'
+          }
+          $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne $env:EXPECTED_UNSIGNED_SHA256) {
+            throw "Unsigned artifact handoff hash mismatch. expected=$env:EXPECTED_UNSIGNED_SHA256 actual=$actual"
+          }
+          Write-Host "Unsigned artifact handoff verified: $actual"
+
+      # 正式发布不允许产出未签名的外层管理器。PFX 只在本步骤解码到
+      # runner 临时目录，签名完成后立即删除；后续打包和哈希基于已签名文件。
+      - name: Sign release executable
+        shell: pwsh
+        env:
+          CODE_SIGN_PFX_B64: ${{ secrets.CODE_SIGN_PFX_B64 }}
+          CODE_SIGN_PFX_PASSWORD: ${{ secrets.CODE_SIGN_PFX_PASSWORD }}
+          EXPECTED_RELEASE_SIGNER_CN: ${{ vars.RELEASE_SIGNER_CN }}
+          EXPECTED_RELEASE_CERT_SHA256: ${{ vars.RELEASE_SIGNER_CERT_SHA256 }}
+          EXPECTED_RELEASE_SPKI_SHA256: ${{ vars.RELEASE_SIGNER_SPKI_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CODE_SIGN_PFX_B64) -or
+              [string]::IsNullOrWhiteSpace($env:CODE_SIGN_PFX_PASSWORD)) {
+            throw 'Formal releases require CODE_SIGN_PFX_B64 and CODE_SIGN_PFX_PASSWORD repository secrets.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_RELEASE_SIGNER_CN) -or
+              $env:EXPECTED_RELEASE_CERT_SHA256 -notmatch '^[0-9A-Fa-f]{64}$' -or
+              $env:EXPECTED_RELEASE_SPKI_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'Set non-secret repository variables RELEASE_SIGNER_CN, RELEASE_SIGNER_CERT_SHA256, and RELEASE_SIGNER_SPKI_SHA256.'
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'zhanclaw-release-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CODE_SIGN_PFX_B64))
+            $signTool = Get-ChildItem `
+                -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+                -File -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($null -eq $signTool) { throw 'signtool.exe was not found on the Windows runner.' }
+
+            & $signTool.FullName sign `
+              /f $pfxPath `
+              /p $env:CODE_SIGN_PFX_PASSWORD `
+              /fd SHA256 `
+              /td SHA256 `
+              /tr http://timestamp.digicert.com `
+              'artifacts/publish/ZhanClawControl.exe'
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE." }
+
+            $signature = Get-AuthenticodeSignature -LiteralPath 'artifacts/publish/ZhanClawControl.exe'
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+              throw "Release executable signature verification failed: $($signature.Status) $($signature.StatusMessage)"
+            }
+            $simpleName = $signature.SignerCertificate.GetNameInfo(
+              [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+            $certHash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData))
+            $spkiHash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData(
+                $signature.SignerCertificate.PublicKey.ExportSubjectPublicKeyInfo()))
+            if ($simpleName -cne $env:EXPECTED_RELEASE_SIGNER_CN -or
+                $certHash -ine $env:EXPECTED_RELEASE_CERT_SHA256 -or
+                $spkiHash -ine $env:EXPECTED_RELEASE_SPKI_SHA256) {
+              throw "Release signer pin mismatch. CN=$simpleName cert=$certHash SPKI=$spkiHash"
+            }
+            Write-Host "Release signature verified: CN=$simpleName cert=$certHash SPKI=$spkiHash"
+          }
+          finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
 
       # 产物文件名使用纯 ASCII，避免中文在下载 URL 中被百分号编码、
       # 以及部分下载工具与命令行环境处理非 ASCII 文件名时出错。
       # Release 标题与说明仍为中文。
       - name: Stage release assets
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
-          $version = '${{ steps.version.outputs.version }}'
+          $version = $env:RELEASE_VERSION
           $stage = 'artifacts/stage'
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
@@ -140,27 +266,27 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: 战Claw多电脑聚控智能被控端 ${{ steps.version.outputs.version }}
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.version.outputs.version) }}
+          name: 战 Claw 被控端 ${{ needs.build.outputs.version }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.build.outputs.version) }}
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          prerelease: ${{ contains(needs.build.outputs.version, '-') }}
           generate_release_notes: true
           files: |
             artifacts/*.exe
             artifacts/*.zip
             artifacts/SHA256SUMS.txt
           body: |
-            ## 战Claw多电脑聚控智能被控端 ${{ steps.version.outputs.version }}
+            ## 战 Claw 被控端 ${{ needs.build.outputs.version }}
 
-            Windows x64 被控端管理程序。下载 `ZhanClawWorker-${{ steps.version.outputs.version }}-win-x64.exe` 后**右键以管理员身份运行**即可，无需安装 .NET 运行时。
+            Windows x64 被控端管理程序。下载 `ZhanClawWorker-${{ needs.build.outputs.version }}-win-x64.exe` 后**右键以管理员身份运行**即可，无需安装 .NET 运行时。
 
             首次运行会进入安装向导，完成后可在托盘常驻。
 
-            > 产物文件名为 ASCII（`ZhanClawWorker-*`），便于命令行下载与脚本化分发；程序界面与安装后的显示名称仍为「战Claw多电脑聚控智能被控端」。
+            > 产物文件名为 ASCII（`ZhanClawWorker-*`），便于命令行下载与脚本化分发；程序界面与安装后的显示名称为「战 Claw 被控端」。
 
             ### 校验
-            下载后请核对 `SHA256SUMS.txt` 中的哈希值。
+            下载后请核对 `SHA256SUMS.txt` 中的哈希值，并在 Windows 文件属性中检查数字签名。正式发布流程在签名缺失或无效时会失败。
 
             ### 注意
             - 安装需要管理员权限（写入 `C:\Program Files\P2PAgent` 与 `C:\ProgramData\P2PAgent`、注册开机任务）。
-            - 安装完成后 `allowed_peers` 若为空，本机将拒绝所有远端任务，这是安全的默认状态。
+            - 安装完成后 `allowed_peers` 默认为空，管理器不会配置任何获准主控；远端请求的最终执行策略由随包 Agent 实现。

@@ -16,6 +16,8 @@ public partial class MainWindow : Window
     private readonly MainViewModel _viewModel = new();
     private readonly UiStateService _uiState = new();
     private WinForms.NotifyIcon? _trayIcon;
+    private WinForms.ToolStripMenuItem? _openTrayItem;
+    private WinForms.ToolStripMenuItem? _exitTrayItem;
 
     // 用户确认退出程序（而非最小化到托盘）
     private bool _reallyExit;
@@ -32,11 +34,8 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         Closed += OnClosed;
 
-        _viewModel.Settings.UninstallCompleted += (_, _) =>
-        {
-            _reallyExit = true;
-            RequestShutdown();
-        };
+        _viewModel.Settings.UninstallCompleted += OnUninstallCompleted;
+        App.Localization.LanguageChanged += OnLanguageChanged;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -68,34 +67,33 @@ public partial class MainWindow : Window
                     ? new Drawing.Icon(iconStream)
                     : Drawing.SystemIcons.Application,
                 Visible = true,
-                Text = AppInfo.ProductName
+                Text = App.Localization.Text("ProductName")
             };
 
             var menu = new WinForms.ContextMenuStrip();
 
-            var openItem = new WinForms.ToolStripMenuItem("打开主窗口");
-            openItem.Click += (_, _) => RestoreWindow();
-            menu.Items.Add(openItem);
+            _openTrayItem = new WinForms.ToolStripMenuItem(App.Localization.Text("CommonOpenMain"));
+            _openTrayItem.Click += (_, _) => RestoreWindow();
+            menu.Items.Add(_openTrayItem);
 
             menu.Items.Add(new WinForms.ToolStripSeparator());
 
-            var exitItem = new WinForms.ToolStripMenuItem("退出控制软件");
-            exitItem.Click += (_, _) =>
+            _exitTrayItem = new WinForms.ToolStripMenuItem(App.Localization.Text("CommonExitApp"));
+            _exitTrayItem.Click += (_, _) =>
             {
                 var confirm = MessageBox.Show(
-                    "退出控制软件不会停止后台 Agent。\n\n" +
-                    "如需停止接受远端任务，请先在「状态」页停止 Agent。\n\n确定退出？",
-                    "退出",
+                    App.Localization.Text("TrayExitConfirm"),
+                    App.Localization.Text("DialogExit"),
                     MessageBoxButton.OKCancel,
                     MessageBoxImage.Question);
 
-                if (confirm == MessageBoxResult.OK)
+                if (confirm == MessageBoxResult.OK && ConfirmDiscardAuthorizationDraft())
                 {
                     _reallyExit = true;
                     RequestShutdown();
                 }
             };
-            menu.Items.Add(exitItem);
+            menu.Items.Add(_exitTrayItem);
 
             _trayIcon.ContextMenuStrip = menu;
             _trayIcon.DoubleClick += (_, _) => RestoreWindow();
@@ -117,7 +115,7 @@ public partial class MainWindow : Window
         var auth = _viewModel.Status.AuthorizedCount;
 
         // NotifyIcon.Text 有 63 字符上限
-        var text = $"{AppInfo.ShortName} · {running} · 授权 {auth}";
+        var text = App.Localization.Format("TrayText", App.Localization.Text("ShortName"), running, auth);
         _trayIcon.Text = text.Length > 62 ? text[..62] : text;
     }
 
@@ -159,12 +157,20 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!ConfirmDiscardAuthorizationDraft())
+        {
+            e.Cancel = true;
+            return;
+        }
+
         // 放行关闭，真正的退出推迟到 OnClosed
         _reallyExit = true;
     }
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        App.Localization.LanguageChanged -= OnLanguageChanged;
+        _viewModel.Settings.UninstallCompleted -= OnUninstallCompleted;
         _viewModel.Dispose();
 
         if (_trayIcon is not null)
@@ -175,5 +181,29 @@ public partial class MainWindow : Window
         }
 
         RequestShutdown();
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e)
+    {
+        if (_openTrayItem is not null) _openTrayItem.Text = App.Localization.Text("CommonOpenMain");
+        if (_exitTrayItem is not null) _exitTrayItem.Text = App.Localization.Text("CommonExitApp");
+        if (_trayIcon is not null) _trayIcon.Text = App.Localization.Text("ShortName")[..Math.Min(62, App.Localization.Text("ShortName").Length)];
+        UpdateTrayText();
+    }
+
+    private void OnUninstallCompleted(object? sender, EventArgs e)
+    {
+        _reallyExit = true;
+        RequestShutdown();
+    }
+
+    private bool ConfirmDiscardAuthorizationDraft()
+    {
+        if (!_viewModel.HasUnsavedAuthorizationChanges) return true;
+        return MessageBox.Show(
+                   App.Localization.Text("DialogUnsavedAuthorizationExit"),
+                   App.Localization.Text("DialogExit"),
+                   MessageBoxButton.OKCancel,
+                   MessageBoxImage.Warning) == MessageBoxResult.OK;
     }
 }

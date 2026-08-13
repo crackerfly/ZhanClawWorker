@@ -31,6 +31,7 @@ public sealed class ThemeService
 
     private ResourceDictionary? _current;
     private readonly List<Window> _tracked = new();
+    private string? _interactiveUserSid;
 
     public AppTheme CurrentTheme { get; private set; } = AppTheme.Light;
 
@@ -39,11 +40,14 @@ public sealed class ThemeService
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    public static AppTheme DetectSystemTheme()
+    public static AppTheme DetectSystemTheme(string? interactiveUserSid = null)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(PersonalizeKey);
+            using var key = string.IsNullOrWhiteSpace(interactiveUserSid)
+                ? Registry.CurrentUser.OpenSubKey(PersonalizeKey)
+                : Registry.Users.OpenSubKey($@"{interactiveUserSid}\{PersonalizeKey}") ??
+                  Registry.CurrentUser.OpenSubKey(PersonalizeKey);
             var value = key?.GetValue("AppsUseLightTheme");
             if (value is int i)
             {
@@ -58,14 +62,15 @@ public sealed class ThemeService
         return AppTheme.Light;
     }
 
-    public void Initialize()
+    public void Initialize(string? interactiveUserSid = null)
     {
-        Apply(DetectSystemTheme(), force: true);
+        _interactiveUserSid = interactiveUserSid;
+        Apply(DetectSystemTheme(_interactiveUserSid), force: true);
     }
 
     public void Refresh()
     {
-        Apply(DetectSystemTheme(), force: false);
+        Apply(DetectSystemTheme(_interactiveUserSid), force: false);
     }
 
     private void Apply(AppTheme theme, bool force)
@@ -166,13 +171,12 @@ public sealed class ThemeService
         {
             Refresh();
         }
-        else if (msg == WM_SETTINGCHANGE && lParam != IntPtr.Zero)
+        else if (msg == WM_SETTINGCHANGE)
         {
-            var section = Marshal.PtrToStringAuto(lParam);
-            if (string.Equals(section, "ImmersiveColorSet", StringComparison.OrdinalIgnoreCase))
-            {
-                Refresh();
-            }
+            // Windows 11 emits several section names (and occasionally null) for
+            // the same Personalize change. Re-reading the exact interactive-user
+            // key is cheap and avoids missing a dark/light transition.
+            Refresh();
         }
 
         return IntPtr.Zero;

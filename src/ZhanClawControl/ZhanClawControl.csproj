@@ -34,10 +34,10 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <Product>战Claw多电脑聚控智能被控端</Product>
-    <AssemblyTitle>战Claw多电脑聚控智能被控端</AssemblyTitle>
+    <Product>战 Claw 被控端</Product>
+    <AssemblyTitle>战 Claw 被控端</AssemblyTitle>
     <Company>StarSoftComm</Company>
-    <Description>战Claw 多电脑聚控 P2P 被控端管理程序</Description>
+    <Description>战 Claw P2P 被控端管理器</Description>
     <Copyright>Copyright © StarSoftComm</Copyright>
     <Version>1.0.0</Version>
     <FileVersion>1.0.0.0</FileVersion>
@@ -52,8 +52,10 @@
   <Target Name="EnsureAgentBinary" BeforeTargets="BeforeBuild">
     <Error Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\p2p-agent.exe')"
            Text="缺少 runtime\p2p-agent.exe。请把发行包中的 p2p-agent.exe 放到仓库 runtime 目录后再构建。" />
-    <Warning Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')"
-             Text="缺少 runtime\swarm.key，安装包不会内置私网密钥，安装向导将要求用户手动选择文件。" />
+    <Error Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\payload-manifest.json')"
+           Text="缺少 runtime\payload-manifest.json，无法验证 Agent payload。" />
+    <Error Condition="!Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')"
+           Text="缺少 runtime\swarm.key：生产构建禁止产出不含私网密钥的安装包。" />
     <Message Condition="Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')"
              Importance="high"
              Text="已检测到 runtime\swarm.key，将内置进安装包（用户免选）。" />
@@ -63,12 +65,15 @@
     <EmbeddedResource Include="..\..\runtime\p2p-agent.exe">
       <LogicalName>ZhanClawControl.payload.p2p-agent.exe</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\runtime\payload-manifest.json">
+      <LogicalName>ZhanClawControl.payload.payload-manifest.json</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!--
     swarm.key 是私网准入密钥，内置进安装包以便用户免选。
     优先来源：仓库 runtime\swarm.key（入库）；CI 也可从 SWARM_KEY_B64 Secret 写出同一路径。
-    两者都缺失时安装向导会退回为手动选择文件。
+    正式构建要求该文件存在；缺失时构建直接失败，避免误发无密钥安装包。
   -->
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\runtime\swarm.key')">
     <EmbeddedResource Include="..\..\runtime\swarm.key">

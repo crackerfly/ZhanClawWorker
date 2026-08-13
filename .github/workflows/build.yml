@@ -10,8 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  # 发布滚动 dev 预发行版需要写权限；PR 触发时不会走到发布步骤
-  contents: write
+  contents: read
 
 concurrency:
   # 连续推送时只保留最后一次，避免多个构建同时抢同一个 dev tag
@@ -22,6 +21,8 @@ jobs:
   build:
     name: Build (win-x64)
     runs-on: windows-latest
+    outputs:
+      short: ${{ steps.stage.outputs.short }}
 
     steps:
       - name: Checkout
@@ -35,19 +36,7 @@ jobs:
       - name: Verify payload files
         shell: pwsh
         run: |
-          $agent = 'runtime/p2p-agent.exe'
-          if (-not (Test-Path $agent)) {
-            Write-Error "缺少 $agent。请把发行包中的 p2p-agent.exe 提交到仓库 runtime 目录。"
-            exit 1
-          }
-          $size = (Get-Item $agent).Length
-          Write-Host "p2p-agent.exe: $([math]::Round($size/1MB,2)) MB"
-
-          if (Test-Path 'runtime/swarm.key') {
-            Write-Host 'swarm.key: 已内置（安装向导免选）'
-          } else {
-            Write-Warning 'runtime/swarm.key 缺失：安装向导将要求用户手动选择文件。'
-          }
+          ./scripts/Test-Payload.ps1 -RequireSwarmKey
 
       - name: Restore
         run: dotnet restore src/ZhanClawControl/ZhanClawControl.csproj
@@ -103,10 +92,24 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      # ---- 以下仅在推送主分支时执行，PR 不发布 ----
+  publish-dev:
+    name: Publish rolling dev release
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download verified build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ZhanClawWorker-ci-${{ needs.build.outputs.short }}
+          path: artifacts/ci
 
       - name: Move dev tag to current commit
-        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           git config user.name  "github-actions[bot]"
@@ -115,7 +118,6 @@ jobs:
           git push -f origin dev
 
       - name: Publish rolling dev release
-        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           name: 开发构建 (dev)
@@ -129,11 +131,11 @@ jobs:
           body: |
             ## 开发构建
 
-            **每次推送主分支自动覆盖，始终是最新代码。** 仅供内部测试，不用于正式分发。
+            **每次推送主分支自动覆盖，始终是最新代码。** 此 dev 流水线不执行外层 Authenticode 签名，仅供隔离环境内部测试，不用于正式分发。正式版本只能由 `release.yml` 的失败关闭签名流程生成。
 
             | 项 | 值 |
             |---|---|
-            | 提交 | [`${{ steps.stage.outputs.short }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
+            | 提交 | [`${{ needs.build.outputs.short }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
             | 构建号 | `${{ github.run_number }}` |
             | 版本 | `1.0.0-dev.${{ github.run_number }}` |
             | 构建记录 | [运行 #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |

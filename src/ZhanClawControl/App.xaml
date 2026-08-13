@@ -20,7 +20,6 @@
             <infra:InverseBoolConverter x:Key="InverseBool" />
             <infra:BoolToStatusBrushConverter x:Key="BoolToStatusBrush" />
             <infra:StringNotEmptyToVisibilityConverter x:Key="StringNotEmptyToVisibility" />
-            <infra:StepGlyphConverter x:Key="StepGlyph" />
 
             <DataTemplate DataType="{x:Type vm:StatusViewModel}">
                 <views:StatusView />

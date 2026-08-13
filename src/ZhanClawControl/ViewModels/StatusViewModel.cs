@@ -9,25 +9,26 @@ public sealed class StatusViewModel : ObservableObject
 {
     private readonly ControlApiClient _api;
     private readonly ScheduledTaskService _task = new();
-    private readonly AgentLogService _log = new();
-
+    private readonly HashSet<string> _configuredPeerIds = new(StringComparer.Ordinal);
     private bool _agentRunning;
     private string _peerId = "";
     private string _agentVersion = "";
     private string _agentName = "";
-    private string _taskStateText = "未知";
-    private string _statusHeadline = "正在检测…";
+    private string _taskStateText = "";
+    private string _statusHeadline = "";
     private string _statusDetail = "";
     private string _busyMessage = "";
     private bool _isBusy;
-    private int _authorizedCount;
+    private bool _configurationPending;
+    private bool _effectiveKnown;
     private string _connectivitySummary = "—";
     private string _deploymentIssues = "";
 
     public StatusViewModel(ControlApiClient api)
     {
         _api = api;
-
+        _taskStateText = L("StatusTaskUnknown");
+        _statusHeadline = L("StatusChecking");
         StartCommand = new AsyncRelayCommand(StartAsync, () => !IsBusy && !AgentRunning);
         StopCommand = new AsyncRelayCommand(StopAsync, () => !IsBusy && AgentRunning);
         RestartCommand = new AsyncRelayCommand(RestartAsync, () => !IsBusy);
@@ -35,27 +36,22 @@ public sealed class StatusViewModel : ObservableObject
         RepairCommand = new AsyncRelayCommand(RepairAsync, () => !IsBusy);
     }
 
-    public ObservableCollection<PeerEntry> ConnectedPeers { get; } = new();
+    private static string L(string key) => App.Localization.Text(key);
+    private static string F(string key, params object?[] values) => App.Localization.Format(key, values);
 
+    public ObservableCollection<PeerEntry> ConnectedPeers { get; } = new();
     public AsyncRelayCommand StartCommand { get; }
     public AsyncRelayCommand StopCommand { get; }
     public AsyncRelayCommand RestartCommand { get; }
     public RelayCommand CopyPeerIdCommand { get; }
     public AsyncRelayCommand RepairCommand { get; }
+    public event EventHandler? RuntimeRestartVerified;
 
-    /// <summary>升级 GUI 后未重新部署后端时的提示文本，为空表示部署一致。</summary>
     public string DeploymentIssues
     {
         get => _deploymentIssues;
-        private set
-        {
-            if (SetProperty(ref _deploymentIssues, value))
-            {
-                OnPropertyChanged(nameof(ShowDeploymentWarning));
-            }
-        }
+        private set { if (SetProperty(ref _deploymentIssues, value)) OnPropertyChanged(nameof(ShowDeploymentWarning)); }
     }
-
     public bool ShowDeploymentWarning => DeploymentIssues.Length > 0;
 
     public bool AgentRunning
@@ -63,122 +59,102 @@ public sealed class StatusViewModel : ObservableObject
         get => _agentRunning;
         private set
         {
-            if (SetProperty(ref _agentRunning, value))
-            {
-                OnPropertyChanged(nameof(RunningText));
-                StartCommand.RaiseCanExecuteChanged();
-                StopCommand.RaiseCanExecuteChanged();
-            }
+            if (!SetProperty(ref _agentRunning, value)) return;
+            OnPropertyChanged(nameof(RunningText));
+            OnPropertyChanged(nameof(EffectiveAuthorizationSummary));
+            StartCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
         }
     }
-
-    public string RunningText => AgentRunning ? "运行中" : "已停止";
+    public string RunningText => AgentRunning ? L("StatusRunning") : L("StatusStopped");
 
     public string PeerId
     {
         get => _peerId;
-        private set
-        {
-            if (SetProperty(ref _peerId, value))
-            {
-                CopyPeerIdCommand.RaiseCanExecuteChanged();
-            }
-        }
+        private set { if (SetProperty(ref _peerId, value)) CopyPeerIdCommand.RaiseCanExecuteChanged(); }
     }
+    public string AgentVersion { get => _agentVersion; private set => SetProperty(ref _agentVersion, value); }
+    public string AgentName { get => _agentName; private set => SetProperty(ref _agentName, value); }
+    public string ConnectivitySummary { get => _connectivitySummary; private set => SetProperty(ref _connectivitySummary, value); }
+    public string TaskStateText { get => _taskStateText; private set => SetProperty(ref _taskStateText, value); }
+    public string StatusHeadline { get => _statusHeadline; private set => SetProperty(ref _statusHeadline, value); }
+    public string StatusDetail { get => _statusDetail; private set => SetProperty(ref _statusDetail, value); }
 
-    public string AgentVersion
-    {
-        get => _agentVersion;
-        private set => SetProperty(ref _agentVersion, value);
-    }
-
-    public string AgentName
-    {
-        get => _agentName;
-        private set => SetProperty(ref _agentName, value);
-    }
-
-    /// <summary>中继预留 / mDNS / 已连接数，用于判断本机是否真的接入了网络。</summary>
-    public string ConnectivitySummary
-    {
-        get => _connectivitySummary;
-        private set => SetProperty(ref _connectivitySummary, value);
-    }
-
-    public string TaskStateText
-    {
-        get => _taskStateText;
-        private set => SetProperty(ref _taskStateText, value);
-    }
-
-    public string StatusHeadline
-    {
-        get => _statusHeadline;
-        private set => SetProperty(ref _statusHeadline, value);
-    }
-
-    public string StatusDetail
-    {
-        get => _statusDetail;
-        private set => SetProperty(ref _statusDetail, value);
-    }
-
-    public int AuthorizedCount
-    {
-        get => _authorizedCount;
-        set
-        {
-            if (SetProperty(ref _authorizedCount, value))
-            {
-                OnPropertyChanged(nameof(AuthorizationSummary));
-                OnPropertyChanged(nameof(ShowNoAuthorizationWarning));
-            }
-        }
-    }
-
-    public string AuthorizationSummary => AuthorizedCount == 0
-        ? "未授权任何主控设备"
-        : $"已授权 {AuthorizedCount} 台主控设备";
-
-    /// <summary>白名单为空是安全的默认状态，不是故障；提示语必须写清楚。</summary>
-    public bool ShowNoAuthorizationWarning => AuthorizedCount == 0;
+    public int AuthorizedCount => _configuredPeerIds.Count;
+    public bool ShowNoAuthorizationWarning => _configuredPeerIds.Count == 0;
+    public string AuthorizationSummary => ConfiguredAuthorizationSummary;
+    public string ConfiguredAuthorizationSummary =>
+        (_configuredPeerIds.Count == 0 ? L("StatusConfiguredNone") : F("StatusConfiguredCount", _configuredPeerIds.Count)) +
+        (_configurationPending ? L("StatusAuthorizationPending") : "");
+    public string EffectiveAuthorizationSummary => !AgentRunning || !_effectiveKnown
+        ? L("StatusEffectiveUnknown")
+        : AuthorizedPeerIds.Count == 0
+            ? L("StatusEffectiveNone")
+            : F("StatusEffectiveCount", AuthorizedPeerIds.Count);
+    public HashSet<string> AuthorizedPeerIds { get; } = new(StringComparer.Ordinal);
 
     public bool IsBusy
     {
         get => _isBusy;
         private set
         {
-            if (SetProperty(ref _isBusy, value))
-            {
-                StartCommand.RaiseCanExecuteChanged();
-                StopCommand.RaiseCanExecuteChanged();
-                RestartCommand.RaiseCanExecuteChanged();
-                RepairCommand.RaiseCanExecuteChanged();
-            }
+            if (!SetProperty(ref _isBusy, value)) return;
+            StartCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
+            RestartCommand.RaiseCanExecuteChanged();
+            RepairCommand.RaiseCanExecuteChanged();
         }
     }
+    public string BusyMessage { get => _busyMessage; private set => SetProperty(ref _busyMessage, value); }
 
-    public string BusyMessage
+    public void SetConfiguredAuthorization(IEnumerable<string> peerIds, bool pendingRestart)
     {
-        get => _busyMessage;
-        private set => SetProperty(ref _busyMessage, value);
+        var next = peerIds.ToHashSet(StringComparer.Ordinal);
+        if (!_configuredPeerIds.SetEquals(next))
+        {
+            _configuredPeerIds.Clear();
+            _configuredPeerIds.UnionWith(next);
+            OnPropertyChanged(nameof(AuthorizedCount));
+            OnPropertyChanged(nameof(ShowNoAuthorizationWarning));
+        }
+        if (_configurationPending != pendingRestart) _configurationPending = pendingRestart;
+        OnPropertyChanged(nameof(AuthorizationSummary));
+        OnPropertyChanged(nameof(ConfiguredAuthorizationSummary));
+    }
+
+    public void MarkAuthorizationEffective(IEnumerable<string> peerIds)
+    {
+        AuthorizedPeerIds.Clear();
+        AuthorizedPeerIds.UnionWith(peerIds);
+        _effectiveKnown = true;
+        _configurationPending = false;
+        OnPropertyChanged(nameof(EffectiveAuthorizationSummary));
+        OnPropertyChanged(nameof(ConfiguredAuthorizationSummary));
+        OnPropertyChanged(nameof(AuthorizationSummary));
+    }
+
+    public void InitializeEffectiveAuthorization(IEnumerable<string> peerIds, bool known)
+    {
+        AuthorizedPeerIds.Clear();
+        AuthorizedPeerIds.UnionWith(peerIds);
+        _effectiveKnown = known;
+        OnPropertyChanged(nameof(EffectiveAuthorizationSummary));
     }
 
     public async Task RefreshAsync(CancellationToken ct = default)
     {
-        var portOpen = ControlApiClient.IsPortOpen(400);
+        var portOpen = await ControlApiClient.IsPortOpenAsync(400, ct).ConfigureAwait(true);
         var processAlive = ScheduledTaskService.IsAgentProcessRunning();
-
         AgentRunning = portOpen && processAlive;
 
         var state = await _task.GetStateAsync(ct).ConfigureAwait(true);
         TaskStateText = state switch
         {
-            TaskState.NotInstalled => "未注册",
-            TaskState.Ready => "已注册（就绪）",
-            TaskState.Running => "已注册（运行中）",
-            TaskState.Disabled => "已注册（已禁用）",
-            _ => "已注册（状态未知）"
+            TaskState.NotInstalled => L("StatusTaskMissing"),
+            TaskState.Ready => L("StatusTaskReady"),
+            TaskState.Running => L("StatusTaskRunning"),
+            TaskState.Disabled => L("StatusTaskDisabled"),
+            _ => L("StatusTaskUnknown")
         };
 
         if (AgentRunning)
@@ -189,17 +165,15 @@ public sealed class StatusViewModel : ObservableObject
                 PeerId = info.PeerId;
                 AgentVersion = info.Version;
                 AgentName = info.AgentName;
-
-                StatusHeadline = "本机已接入 P2P 网络";
-                StatusDetail = AuthorizedCount == 0
-                    ? "Agent 正在运行，但尚未授权任何主控设备，当前会拒绝所有远端任务。"
-                    : "Agent 正在运行，可接受已授权主控设备的任务。";
+                StatusHeadline = L("StatusProcessAndApiReady");
+                StatusDetail = _configuredPeerIds.Count == 0
+                    ? L("StatusProcessAndApiReadyNoAuth")
+                    : L("StatusProcessAndApiReadyAuth");
             }
             else
             {
-                ConnectivitySummary = "—";
-                StatusHeadline = "Agent 正在运行，但本机 API 无响应";
-                StatusDetail = "端口已监听但读取 /v1/info 失败，请检查 agent-api.token 是否可读。";
+                StatusHeadline = L("StatusApiUnavailable");
+                StatusDetail = L("StatusApiUnavailableDetail");
             }
 
             var peers = await _api.GetPeersAsync(ct).ConfigureAwait(true);
@@ -210,112 +184,155 @@ public sealed class StatusViewModel : ObservableObject
         {
             PeerId = "";
             AgentVersion = "";
+            AgentName = "";
             ConnectivitySummary = "—";
             ConnectedPeers.Clear();
-
-            StatusHeadline = processAlive
-                ? "Agent 进程存在但未监听本机端口"
-                : "Agent 未运行";
-            StatusDetail = processAlive
-                ? "进程可能正在启动，或配置中的 api_listen 不是 127.0.0.1:7432。"
-                : "本机当前不接受任何远端任务。点击「启动」恢复后台。";
+            OnPropertyChanged(nameof(EffectiveAuthorizationSummary));
+            StatusHeadline = processAlive ? L("StatusProcessNoPort") : L("StatusNotRunning");
+            StatusDetail = processAlive ? L("StatusProcessNoPortDetail") : L("StatusNotRunningDetail");
         }
-
-        _log.RollIfNeeded();
     }
 
-    /// <summary>
-    /// /v1/info 实际只返回 peer_id 与 version（富网络信息在 fleet_inspect 输出里，不在该接口），
-    /// 因此连通性摘要基于 /v1/peers 的实际结果与已授权列表的交集。
-    /// </summary>
     private string BuildConnectivitySummary(IReadOnlyList<PeerEntry> peers)
     {
-        if (peers.Count == 0)
+        if (peers.Count == 0) return L("StatusNoConnections");
+        var summary = F("StatusConnectionsCount", peers.Count);
+        if (_effectiveKnown && AuthorizedPeerIds.Count > 0)
         {
-            return "未连接任何远端设备";
-        }
-
-        var authorizedOnline = peers.Count(p => AuthorizedPeerIds.Contains(p.PeerId));
-        var summary = $"已连接 {peers.Count} 个远端设备";
-
-        if (AuthorizedPeerIds.Count > 0)
-        {
+            var authorizedOnline = peers.Count(p => AuthorizedPeerIds.Contains(p.PeerId));
             summary += authorizedOnline > 0
-                ? $"，其中 {authorizedOnline} 个是已授权主控"
-                : "，但没有一个是已授权主控";
+                ? F("StatusAuthorizedConnectionsCount", authorizedOnline)
+                : L("StatusNoAuthorizedConnections");
         }
-
-        var paths = peers
-            .Select(p => p.ConnectionPath)
-            .Where(p => p.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (paths.Count > 0)
-        {
-            summary += $"（路径：{string.Join("、", paths)}）";
-        }
-
+        var paths = peers.Select(p => p.ConnectionPath).Where(p => p.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (paths.Count > 0) summary += F("StatusConnectionPaths", string.Join(" · ", paths));
         return summary;
     }
 
-    /// <summary>已授权主控的 PeerID 集合，由主 ViewModel 在刷新时注入。</summary>
-    public HashSet<string> AuthorizedPeerIds { get; } = new(StringComparer.Ordinal);
-
-    private async Task RepairAsync()
+    private void SyncPeers(IReadOnlyList<PeerEntry> peers)
     {
-        var confirm = MessageBox.Show(
-            "修复安装会重新部署 Agent 程序、后台宿主与开机自启任务，并重启 Agent。\n\n" +
-            "配置、设备身份与授权列表不会改变，PeerID 保持不变。\n\n继续？",
-            "修复安装",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Question);
+        ConnectedPeers.Clear();
+        foreach (var peer in peers) ConnectedPeers.Add(peer);
+    }
 
-        if (confirm != MessageBoxResult.OK)
-        {
-            return;
-        }
-
+    private async Task StartAsync()
+    {
         IsBusy = true;
-        BusyMessage = "正在修复安装…";
-
+        BusyMessage = L("StatusStarting");
         try
         {
-            var installer = new InstallerService();
-            var steps = await installer.RepairAsync().ConfigureAwait(true);
-            var failed = steps.Where(step => !step.Success).ToList();
-
-            if (failed.Count > 0)
+            // A listening/API failure does not prove that an older host or Agent
+            // instance is absent. Stop the exact installed product processes
+            // first so a later healthy API can only certify a newly submitted run.
+            var stop = await _task.StopAsync().ConfigureAwait(true);
+            if (!stop.Success)
             {
-                MessageBox.Show(
-                    "修复未完成：\n\n" +
-                    string.Join(Environment.NewLine, failed.Select(step => $"· {step.Title}：{step.Detail}")),
-                    AppInfo.ProductName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                ShowError(F("DialogStartFailed", stop.CombinedOutput));
+                return;
             }
-            else
+            var result = await _task.StartAsync().ConfigureAwait(true);
+            if (!result.Success)
             {
-                MessageBox.Show(
-                    "修复完成。后台已改为无窗口方式运行，日志将带统一时间戳。",
-                    AppInfo.ProductName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                ShowError(F("DialogStartFailed", result.CombinedOutput));
+                return;
             }
+            if (!await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true))
+            {
+                ShowWarning(L("DialogStartTimeout"));
+                return;
+            }
+            RuntimeRestartVerified?.Invoke(this, EventArgs.Empty);
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"修复失败：{ex.Message}", AppInfo.ProductName,
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        catch (Exception ex) { ShowError(F("DialogStartFailed", ex.Message)); }
         finally
         {
             IsBusy = false;
             BusyMessage = "";
+            await RefreshAsync().ConfigureAwait(true);
         }
+    }
 
-        await CheckDeploymentAsync().ConfigureAwait(true);
-        await RefreshAsync().ConfigureAwait(true);
+    private async Task StopAsync()
+    {
+        if (MessageBox.Show(L("DialogStopConfirm"), L("CommonStop"), MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        IsBusy = true;
+        BusyMessage = L("StatusStopping");
+        try
+        {
+            var result = await _task.StopAsync().ConfigureAwait(true);
+            if (!result.Success) ShowError(F("DialogStopFailed", result.CombinedOutput));
+        }
+        catch (Exception ex) { ShowError(F("DialogStopFailed", ex.Message)); }
+        finally
+        {
+            IsBusy = false;
+            BusyMessage = "";
+            await RefreshAsync().ConfigureAwait(true);
+        }
+    }
+
+    private async Task RestartAsync()
+    {
+        IsBusy = true;
+        BusyMessage = L("StatusRestarting");
+        try
+        {
+            var stop = await _task.StopAsync().ConfigureAwait(true);
+            if (!stop.Success) { ShowError(F("DialogRestartError", stop.CombinedOutput)); return; }
+            var start = await _task.StartAsync().ConfigureAwait(true);
+            if (!start.Success) { ShowError(F("DialogRestartError", start.CombinedOutput)); return; }
+            if (!await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true))
+            {
+                ShowError(F("DialogRestartError", L("DialogStartTimeout")));
+                return;
+            }
+            RuntimeRestartVerified?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex) { ShowError(F("DialogRestartError", ex.Message)); }
+        finally
+        {
+            IsBusy = false;
+            BusyMessage = "";
+            await RefreshAsync().ConfigureAwait(true);
+        }
+    }
+
+    private void CopyPeerId()
+    {
+        try { Clipboard.SetText(PeerId); }
+        catch (Exception ex) { ShowError(F("DialogCopyFailed", ex.Message)); }
+    }
+
+    private async Task RepairAsync()
+    {
+        if (MessageBox.Show(L("DialogRepairConfirm"), L("StatusRepair"), MessageBoxButton.OKCancel,
+                MessageBoxImage.Question) != MessageBoxResult.OK) return;
+        IsBusy = true;
+        BusyMessage = L("StatusRepairing");
+        try
+        {
+            var steps = await new InstallerService().RepairAsync().ConfigureAwait(true);
+            var failed = steps.Where(step => !step.Success).ToList();
+            if (failed.Count > 0)
+                ShowWarning(F("DialogOperationFailed", string.Join(Environment.NewLine,
+                    failed.Select(step =>
+                    {
+                        var display = InstallStepPresenter.Present(step);
+                        return $"· {display.Title}: {display.Detail}";
+                    }))));
+            else
+                RuntimeRestartVerified?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex) { ShowError(F("DialogOperationFailed", ex.Message)); }
+        finally
+        {
+            IsBusy = false;
+            BusyMessage = "";
+            await CheckDeploymentAsync().ConfigureAwait(true);
+            await RefreshAsync().ConfigureAwait(true);
+        }
     }
 
     public async Task CheckDeploymentAsync(CancellationToken ct = default)
@@ -325,126 +342,22 @@ public sealed class StatusViewModel : ObservableObject
             var issues = await InstallerService.CheckDeploymentAsync(ct).ConfigureAwait(true);
             DeploymentIssues = issues.Count == 0
                 ? ""
-                : string.Join(Environment.NewLine, issues.Select(i => "· " + i));
+                : string.Join(Environment.NewLine, issues.Select(issue =>
+                    "· " + (issue.Detail.Length == 0
+                        ? L(issue.ResourceKey)
+                        : F(issue.ResourceKey, issue.Detail))));
         }
-        catch
-        {
-            DeploymentIssues = "";
-        }
+        catch (Exception ex) { DeploymentIssues = F("StatusDeploymentCheckFailed", ex.Message); }
     }
 
-    private void SyncPeers(IReadOnlyList<PeerEntry> peers)
+    public void RefreshLanguage()
     {
-        ConnectedPeers.Clear();
-        foreach (var peer in peers)
-        {
-            ConnectedPeers.Add(peer);
-        }
+        OnPropertyChanged(nameof(RunningText));
+        OnPropertyChanged(nameof(AuthorizationSummary));
+        OnPropertyChanged(nameof(ConfiguredAuthorizationSummary));
+        OnPropertyChanged(nameof(EffectiveAuthorizationSummary));
     }
 
-    private async Task StartAsync()
-    {
-        IsBusy = true;
-        BusyMessage = "正在启动 Agent…";
-
-        try
-        {
-            var result = await _task.StartAsync().ConfigureAwait(true);
-            if (!result.Success)
-            {
-                MessageBox.Show(
-                    $"启动计划任务失败：\n{result.CombinedOutput}",
-                    AppInfo.ProductName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-                return;
-            }
-
-            var ready = await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true);
-            if (!ready)
-            {
-                MessageBox.Show(
-                    "Agent 在 45 秒内没有监听 127.0.0.1:7432。请到「日志」页查看 agent.log。",
-                    AppInfo.ProductName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-            }
-        }
-        finally
-        {
-            IsBusy = false;
-            BusyMessage = "";
-        }
-
-        await RefreshAsync().ConfigureAwait(true);
-    }
-
-    private async Task StopAsync()
-    {
-        var confirm = MessageBox.Show(
-            "停止后本机将从 Fleet 中消失，正在执行的远端任务会被中断。\n\n" +
-            "注意：已经产生副作用的 PowerShell 不会回滚。\n\n确定停止？",
-            "停止 Agent",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-
-        if (confirm != MessageBoxResult.OK)
-        {
-            return;
-        }
-
-        IsBusy = true;
-        BusyMessage = "正在停止 Agent…";
-
-        try
-        {
-            await _task.StopAsync().ConfigureAwait(true);
-            await Task.Delay(1000).ConfigureAwait(true);
-        }
-        finally
-        {
-            IsBusy = false;
-            BusyMessage = "";
-        }
-
-        await RefreshAsync().ConfigureAwait(true);
-    }
-
-    private async Task RestartAsync()
-    {
-        IsBusy = true;
-        BusyMessage = "正在重启 Agent…";
-
-        try
-        {
-            await _task.StopAsync().ConfigureAwait(true);
-            await Task.Delay(1500).ConfigureAwait(true);
-            await _task.StartAsync().ConfigureAwait(true);
-            await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true);
-        }
-        finally
-        {
-            IsBusy = false;
-            BusyMessage = "";
-        }
-
-        await RefreshAsync().ConfigureAwait(true);
-    }
-
-    private void CopyPeerId()
-    {
-        try
-        {
-            Clipboard.SetText(PeerId);
-            MessageBox.Show(
-                "本机 PeerID 已复制。\n\n把它发给主控端管理员，或在主控端的授权列表中添加。",
-                "已复制",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"复制失败：{ex.Message}", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
+    private static void ShowError(string text) => MessageBox.Show(text, L("ProductName"), MessageBoxButton.OK, MessageBoxImage.Error);
+    private static void ShowWarning(string text) => MessageBox.Show(text, L("ProductName"), MessageBoxButton.OK, MessageBoxImage.Warning);
 }

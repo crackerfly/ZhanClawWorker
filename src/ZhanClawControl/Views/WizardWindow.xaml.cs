@@ -48,8 +48,8 @@ public partial class WizardWindow : Window
         if (_viewModel.Installing)
         {
             MessageBox.Show(
-                "安装正在进行中，请等待当前步骤完成。",
-                AppInfo.ProductName,
+                App.Localization.Text("WizardInstallingClose"),
+                App.Localization.Text("ProductName"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             e.Cancel = true;
@@ -64,8 +64,8 @@ public partial class WizardWindow : Window
         }
 
         var confirm = MessageBox.Show(
-            "尚未完成安装。退出后本机不会作为被控端接入网络。\n\n确定退出？",
-            "退出安装",
+            App.Localization.Text("WizardExitConfirm"),
+            App.Localization.Text("WizardExitTitle"),
             MessageBoxButton.OKCancel,
             MessageBoxImage.Question);
 

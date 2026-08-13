@@ -3,8 +3,10 @@
 
     <!--
       品牌色 #024AD8 在深色背景上对比度不足（约 2.6:1），
-      深色主题使用同色相提亮版本以满足可读性；品牌标识本身仍是 #024AD8。
+      深色主题使用同色相提亮版本显示文字、图标和焦点；
+      主操作按钮的填充色仍使用原始 #024AD8。
     -->
+    <SolidColorBrush x:Key="BrandFillBrush" Color="#024AD8" />
     <SolidColorBrush x:Key="BrandBrush" Color="#3D7BEA" />
     <SolidColorBrush x:Key="BrandHoverBrush" Color="#5590F0" />
     <SolidColorBrush x:Key="BrandPressedBrush" Color="#2F66C9" />

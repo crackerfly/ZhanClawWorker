@@ -1,19 +1,46 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Principal;
 using System.Threading;
 using System.Windows;
+using ZhanClawControl.Localization;
 using ZhanClawControl.Services;
 
 namespace ZhanClawControl;
 
 public partial class App : Application
 {
-    private const string SingleInstanceMutexName = @"Global\ZhanClawControl.SingleInstance";
+    private const string SingleInstanceMutexPrefix = @"Local\ZhanClawControl.SingleInstance";
+    private const string InteractiveUserSidSwitch = "--interactive-user-sid";
+    private const string InteractiveUserLocaleSwitch = "--interactive-user-locale";
 
     private Mutex? _mutex;
     private CancellationTokenSource? _hostCts;
 
     public static ThemeService Theme { get; } = new();
+    public static LocalizationService Localization { get; } = new();
+    public static string? InteractiveUserSid { get; private set; }
+
+    public static string InteractiveUserName
+    {
+        get
+        {
+            try
+            {
+                return InteractiveUserSid is null
+                    ? InstallerService.CurrentUserName
+                    : ((NTAccount)new SecurityIdentifier(InteractiveUserSid)
+                        .Translate(typeof(NTAccount))).Value;
+            }
+            catch
+            {
+                // Task Scheduler accepts a canonical SID. Never silently switch
+                // a credential-elevated launch to the administrator account just
+                // because SID -> NTAccount translation is unavailable.
+                return InteractiveUserSid ?? InstallerService.CurrentUserName;
+            }
+        }
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -28,39 +55,50 @@ public partial class App : Application
             return;
         }
 
+        InteractiveUserSid = ReadArgument(args, InteractiveUserSidSwitch) ??
+                             WindowsIdentity.GetCurrent().User?.Value;
+
+        var interactiveLocale = ReadLocaleArgument(args, InteractiveUserLocaleSwitch) ??
+                                CultureInfo.CurrentUICulture.Name;
+        Localization.Initialize(interactiveLocale);
+
         // ---- GUI 模式 ----
         DispatcherUnhandledException += (_, dispatcherArgs) =>
         {
             MessageBox.Show(
-                $"发生未处理的错误：\n\n{dispatcherArgs.Exception.Message}",
-                AppInfo.ProductName,
+                Localization.Format("AppUnhandled", dispatcherArgs.Exception.Message),
+                Localization.Text("ProductName"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             dispatcherArgs.Handled = true;
+            Shutdown(10);
         };
+        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         // 安装、注册计划任务、写 Program Files 与收紧 ACL 都需要管理员，
         // 清单是 asInvoker，因此这里自行提权重启。
         if (!IsElevated())
         {
-            RelaunchElevated();
-            Shutdown();
+            var relaunched = RelaunchElevated(InteractiveUserSid, Localization.SystemCultureName);
+            Shutdown(relaunched ? 0 : 10);
             return;
         }
 
-        _mutex = new Mutex(true, SingleInstanceMutexName, out var createdNew);
+        var mutexName = $"{SingleInstanceMutexPrefix}.{InteractiveUserSid}.{Process.GetCurrentProcess().SessionId}";
+        _mutex = new Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             MessageBox.Show(
-                $"{AppInfo.ProductName}已在运行。\n\n请从系统托盘打开窗口。",
-                AppInfo.ProductName,
+                Localization.Format("AppAlreadyRunning", Localization.Text("ProductName")),
+                Localization.Text("ProductName"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             Shutdown();
             return;
         }
 
-        Theme.Initialize();
+        Theme.Initialize(InteractiveUserSid);
 
         if (!InstallerService.IsInstalled)
         {
@@ -80,12 +118,16 @@ public partial class App : Application
         {
             try
             {
-                await AgentHost.RunAsync(_hostCts.Token).ConfigureAwait(false);
+                var exitCode = await AgentHost.RunAsync(_hostCts.Token).ConfigureAwait(false);
+                Dispatcher.Invoke(() => Shutdown(exitCode));
             }
-            finally
+            catch (OperationCanceledException)
             {
-                // Agent 退出后宿主进程随之结束，计划任务据此判定任务已结束
-                Dispatcher.Invoke(Shutdown);
+                Dispatcher.Invoke(() => Shutdown(5));
+            }
+            catch
+            {
+                Dispatcher.Invoke(() => Shutdown(10));
             }
         });
     }
@@ -103,37 +145,49 @@ public partial class App : Application
         }
     }
 
-    private static void RelaunchElevated()
+    private static bool RelaunchElevated(string? interactiveUserSid, string? interactiveUserLocale)
     {
         var path = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(path))
         {
             MessageBox.Show(
-                "无法定位程序自身路径，请以管理员身份手动运行。",
-                AppInfo.ProductName,
+                Localization.Text("AppPathMissing"),
+                Localization.Text("ProductName"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
-            return;
+            return false;
         }
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = path,
                 UseShellExecute = true,
                 Verb = "runas"
-            });
+            };
+            if (!string.IsNullOrWhiteSpace(interactiveUserSid))
+            {
+                startInfo.ArgumentList.Add(InteractiveUserSidSwitch);
+                startInfo.ArgumentList.Add(interactiveUserSid);
+            }
+            if (!string.IsNullOrWhiteSpace(interactiveUserLocale))
+            {
+                startInfo.ArgumentList.Add(InteractiveUserLocaleSwitch);
+                startInfo.ArgumentList.Add(interactiveUserLocale);
+            }
+
+            return Process.Start(startInfo) is not null;
         }
         catch (Exception ex)
         {
             // 用户在 UAC 弹窗点了「否」会走到这里
             MessageBox.Show(
-                "本程序需要管理员权限才能安装和管理被控端。\n\n" +
-                $"提权失败：{ex.Message}\n\n请右键选择「以管理员身份运行」。",
-                AppInfo.ProductName,
+                Localization.Format("AppNeedsAdmin", ex.Message),
+                Localization.Text("ProductName"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+            return false;
         }
     }
 
@@ -168,9 +222,72 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
         _hostCts?.Cancel();
         _hostCts?.Dispose();
         _mutex?.Dispose();
         base.OnExit(e);
+    }
+
+    private void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Environment.ExitCode = 10;
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        e.SetObserved();
+        Environment.ExitCode = 10;
+        if (!Dispatcher.HasShutdownStarted)
+            Dispatcher.BeginInvoke(() => Shutdown(10));
+    }
+
+    private static string? ReadArgument(IReadOnlyList<string> args, string name)
+    {
+        for (var index = 0; index < args.Count - 1; index++)
+        {
+            if (string.Equals(args[index], name, StringComparison.OrdinalIgnoreCase))
+            {
+                var value = args[index + 1];
+                try
+                {
+                    return new SecurityIdentifier(value).Value;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadLocaleArgument(IReadOnlyList<string> args, string name)
+    {
+        for (var index = 0; index < args.Count - 1; index++)
+        {
+            if (!string.Equals(args[index], name, StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                var culture = CultureInfo.GetCultureInfo(args[index + 1]);
+                if (culture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+                {
+                    return culture.Name.Contains("Hant", StringComparison.OrdinalIgnoreCase) ||
+                           culture.Name.EndsWith("-TW", StringComparison.OrdinalIgnoreCase) ||
+                           culture.Name.EndsWith("-HK", StringComparison.OrdinalIgnoreCase) ||
+                           culture.Name.EndsWith("-MO", StringComparison.OrdinalIgnoreCase)
+                        ? LocalizationService.TraditionalChinese
+                        : LocalizationService.SimplifiedChinese;
+                }
+                return LocalizationService.English;
+            }
+            catch (CultureNotFoundException)
+            {
+                return null;
+            }
+        }
+        return null;
     }
 }

@@ -56,4 +56,7 @@ public static class AppPaths
 
     /// <summary>嵌入资源名：可选的 swarm.key。</summary>
     public const string SwarmKeyPayloadResource = "ZhanClawControl.payload.swarm.key";
+
+    /// <summary>Agent payload 的冻结哈希、随哈希审查的版本元数据与签名策略。</summary>
+    public const string PayloadManifestResource = "ZhanClawControl.payload.payload-manifest.json";
 }

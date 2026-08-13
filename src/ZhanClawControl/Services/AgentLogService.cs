@@ -2,9 +2,22 @@ using System.IO;
 
 namespace ZhanClawControl.Services;
 
+public enum AgentLogReadStatus
+{
+    Success,
+    Missing,
+    Empty,
+    Failed
+}
+
+public sealed record AgentLogReadResult(
+    AgentLogReadStatus Status,
+    string Text,
+    string ErrorCode = "");
+
 /// <summary>
-/// Agent 自身没有日志文件；本程序注册的计划任务经 run-agent.cmd 把 stdout/stderr
-/// 重定向到 logs\agent.log。这里负责读取尾部与体积滚动。
+/// Agent 自身没有日志文件；后台 AgentHost 捕获 stdout/stderr 写入 logs\agent.log。
+/// 这里负责只读尾部，并提供仅在宿主未运行时可成功的清空操作。
 /// </summary>
 public sealed class AgentLogService
 {
@@ -25,11 +38,14 @@ public sealed class AgentLogService
         }
     }
 
-    public async Task<string> ReadTailAsync(int lineCount = 500, CancellationToken ct = default)
+    /// <summary>结构化读取结果，供本地化 UI 区分“缺失、为空、失败”。</summary>
+    public async Task<AgentLogReadResult> ReadTailResultAsync(
+        int lineCount = 500,
+        CancellationToken ct = default)
     {
         if (!Exists)
         {
-            return "尚无日志。Agent 启动后此处会显示运行输出。";
+            return new AgentLogReadResult(AgentLogReadStatus.Missing, "");
         }
 
         try
@@ -39,50 +55,80 @@ public sealed class AgentLogService
                 .ConfigureAwait(false);
 
             return lines.Count == 0
-                ? "日志文件为空。"
-                : string.Join(Environment.NewLine, lines);
+                ? new AgentLogReadResult(AgentLogReadStatus.Empty, "")
+                : new AgentLogReadResult(
+                    AgentLogReadStatus.Success,
+                    string.Join(Environment.NewLine, lines));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return $"读取日志失败：{ex.Message}";
+            return new AgentLogReadResult(
+                AgentLogReadStatus.Failed,
+                "",
+                ex.GetType().Name);
         }
     }
 
-    /// <summary>超过阈值时把当前日志转存为 .1，只保留一代，避免无限增长。</summary>
+    /// <summary>
+    /// 兼容旧 ViewModel 的文本入口。新代码应使用 <see cref="ReadTailResultAsync"/>，
+    /// 再由 LocalizationService 根据 Status 提供界面文案。
+    /// </summary>
+    public async Task<string> ReadTailAsync(int lineCount = 500, CancellationToken ct = default)
+    {
+        var result = await ReadTailResultAsync(lineCount, ct).ConfigureAwait(false);
+        return result.Status switch
+        {
+            AgentLogReadStatus.Success => result.Text,
+            AgentLogReadStatus.Missing => "log_missing",
+            AgentLogReadStatus.Empty => "log_empty",
+            _ => $"log_read_failed:{result.ErrorCode}"
+        };
+    }
+
+    /// <summary>
+    /// 兼容旧调用点的无操作方法。活动日志只能由 AgentHost 在打开写句柄前滚动；
+    /// 运行期间重命名会让宿主继续写入已改名文件，所以这里明确不再 Move。
+    /// </summary>
     public void RollIfNeeded()
     {
-        try
-        {
-            if (SizeBytes <= AppPaths.LogRollThresholdBytes)
-            {
-                return;
-            }
-
-            if (File.Exists(AppPaths.AgentLogRollFile))
-            {
-                File.Delete(AppPaths.AgentLogRollFile);
-            }
-
-            File.Move(AppPaths.AgentLogFile, AppPaths.AgentLogRollFile);
-        }
-        catch
-        {
-            // 文件被 cmd.exe 持有时无法移动，下次再试
-        }
+        // 故意留空：保持 ViewModel 现有调用签名，同时保证活动日志不被重命名。
     }
 
-    public void Clear()
+    /// <summary>
+    /// 只在宿主没有持有写句柄时清空日志。返回 false 表示 Agent 正在写入或文件不可写。
+    /// </summary>
+    public bool TryClear()
     {
         try
         {
-            if (Exists)
+            if (!Exists)
             {
-                File.WriteAllText(AppPaths.AgentLogFile, string.Empty);
+                return true;
             }
+
+            // AgentHost 以 FileShare.Read 打开写句柄，因此运行期间此处会安全失败，
+            // 不会在旧 writer 位置下截断文件并制造稀疏/损坏日志。
+            using var stream = new FileStream(
+                AppPaths.AgentLogFile,
+                FileMode.Open,
+                FileAccess.Write,
+                FileShare.Read);
+            stream.SetLength(0);
+            return true;
         }
         catch
         {
-            // 被占用时忽略
+            return false;
         }
+    }
+
+    /// <summary>同步兼容入口；新 UI 应调用 <see cref="TryClear"/> 并向用户显示失败。</summary>
+    public void Clear()
+    {
+        _ = TryClear();
     }
 }
