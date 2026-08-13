@@ -46,8 +46,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _selectedNav = NavItems[0];
 
-        Authorization.AuthorizationChanged += (_, _) =>
-            Status.AuthorizedCount = Authorization.Peers.Count;
+        Authorization.AuthorizationChanged += (_, _) => SyncAuthorizedPeers();
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _timer.Tick += async (_, _) => await RefreshAsync().ConfigureAwait(true);
@@ -85,8 +84,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         Authorization.Load();
         Settings.Load();
-        Status.AuthorizedCount = Authorization.Peers.Count;
+        SyncAuthorizedPeers();
 
+        await Status.CheckDeploymentAsync().ConfigureAwait(true);
         await RefreshAsync().ConfigureAwait(true);
         _timer.Start();
     }
@@ -104,7 +104,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             await Status.RefreshAsync().ConfigureAwait(true);
             await Authorization.RefreshOnlineStateAsync().ConfigureAwait(true);
-            Status.AuthorizedCount = Authorization.Peers.Count;
+            SyncAuthorizedPeers();
         }
         catch
         {
@@ -113,6 +113,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             _refreshing = false;
+        }
+    }
+
+    private void SyncAuthorizedPeers()
+    {
+        Status.AuthorizedCount = Authorization.Peers.Count;
+        Status.AuthorizedPeerIds.Clear();
+        foreach (var peer in Authorization.Peers)
+        {
+            Status.AuthorizedPeerIds.Add(peer.PeerId);
         }
     }
 

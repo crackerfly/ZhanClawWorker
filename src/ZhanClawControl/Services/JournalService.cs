@@ -12,9 +12,25 @@ public sealed record JournalRecord(
     string State,
     string Status,
     string DurationMs,
+    string Error,
     string Detail)
 {
-    public string DurationText => DurationMs.Length == 0 ? "" : $"{DurationMs} ms";
+    public string DurationText
+    {
+        get
+        {
+            if (DurationMs.Length == 0 ||
+                !double.TryParse(DurationMs,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var ms))
+            {
+                return "";
+            }
+
+            return ms >= 1000 ? $"{ms / 1000:0.0} s" : $"{ms:0} ms";
+        }
+    }
 
     public string ShortCommandId =>
         CommandId.Length > 12 ? CommandId[..12] : CommandId;
@@ -102,15 +118,21 @@ public sealed class JournalService
                 return null;
             }
 
-            // 字段名取自 p2p-agent.exe 内嵌的 json 结构体标签，非猜测
+            // 实测的 journal 记录形状（来自真机诊断）：
+            // {"origin":..,"command_id":..,"fingerprint":..,"state":"accepted|completed",
+            //  "result":{"status":"ok|error","duration_ms":N,"error":"..","output":{..}},
+            //  "updated_utc":".."}
+            // 根层没有 action 字段，动作类型只能从 result.output 的形状推断。
             var commandId = Pick(root, "command_id", "message_id", "id") ?? "";
-            var source = Pick(root, "origin", "from", "executed_by", "peer_id", "source") ?? "";
+            var source = Pick(root, "origin", "from", "peer_id", "source") ?? "";
             var action = Pick(root, "action", "primitive", "operation") ?? "";
             var state = Pick(root, "state", "kind", "type", "mode") ?? "";
             var status = Pick(root, "status", "reason") ?? "";
+            var duration = Pick(root, "duration_ms") ?? "";
+            var error = Pick(root, "error") ?? "";
 
             DateTime? ts = null;
-            var tsText = Pick(root, "timestamp", "sent_at_utc", "captured_at_utc", "updated_utc", "modified_utc");
+            var tsText = Pick(root, "updated_utc", "timestamp", "sent_at_utc", "captured_at_utc", "modified_utc");
             if (tsText is not null && DateTime.TryParse(
                     tsText,
                     System.Globalization.CultureInfo.InvariantCulture,
@@ -121,7 +143,7 @@ public sealed class JournalService
                 ts = parsedTs;
             }
 
-            // 嵌套在 result 里的字段也纳入
+            // status / duration_ms / error 实际位于 result 内，不在根层
             if (root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object)
             {
                 if (status.Length == 0)
@@ -129,25 +151,73 @@ public sealed class JournalService
                     status = Pick(result, "status", "reason") ?? "";
                 }
 
-                if (action.Length == 0)
+                if (duration.Length == 0)
                 {
-                    action = Pick(result, "action", "primitive", "operation") ?? "";
+                    duration = Pick(result, "duration_ms") ?? "";
+                }
+
+                if (error.Length == 0)
+                {
+                    error = Pick(result, "error") ?? "";
                 }
 
                 if (commandId.Length == 0)
                 {
                     commandId = Pick(result, "command_id", "message_id") ?? "";
                 }
+
+                if (action.Length == 0)
+                {
+                    action = InferAction(result);
+                }
             }
 
-            var duration = Pick(root, "duration_ms");
-
-            return new JournalRecord(ts, commandId, source, action, state, status, duration ?? "", line);
+            return new JournalRecord(ts, commandId, source, action, state, status, duration, error, line);
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// journal 不记录动作类型，只能从 result.output 的字段形状反推。
+    /// 依据来自各 Primitive 的实际返回结构。
+    /// </summary>
+    private static string InferAction(JsonElement result)
+    {
+        if (!result.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Object)
+        {
+            return "";
+        }
+
+        if (output.TryGetProperty("collector", out var collector) &&
+            collector.ValueKind == JsonValueKind.Object &&
+            (collector.TryGetProperty("exit_code", out _) || collector.TryGetProperty("shell", out _)))
+        {
+            return "process_execute";
+        }
+
+        if (output.TryGetProperty("agent", out var agent) &&
+            agent.ValueKind == JsonValueKind.Object &&
+            agent.TryGetProperty("providers", out _))
+        {
+            return "fleet_inspect";
+        }
+
+        if (output.TryGetProperty("source_uri", out _) || output.TryGetProperty("destination_uri", out _))
+        {
+            return "resource_transfer";
+        }
+
+        if (output.TryGetProperty("entries", out _) ||
+            output.TryGetProperty("resource_uri", out _) ||
+            output.TryGetProperty("logical_disks", out _))
+        {
+            return "resource_inspect";
+        }
+
+        return "";
     }
 
     private static string? Pick(JsonElement element, params string[] keys)

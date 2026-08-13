@@ -155,6 +155,20 @@ public sealed class ControlApiClient : IDisposable
         }
     }
 
+    /// <summary>取 /v1/peers 的原始响应，供诊断使用（解析失败时才能定位字段名）。</summary>
+    public async Task<string?> GetPeersRawAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var json = await GetAsync("/v1/peers", ct).ConfigureAwait(false);
+            return json is null ? null : Prettify(json);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyList<PeerEntry>> GetPeersAsync(CancellationToken ct = default)
     {
         var result = new List<PeerEntry>();

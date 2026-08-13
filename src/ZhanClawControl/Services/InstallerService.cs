@@ -32,6 +32,155 @@ public sealed class InstallerService
     public static bool IsInstalled =>
         File.Exists(AppPaths.AgentExe) && File.Exists(AppPaths.ConfigFile);
 
+    /// <summary>
+    /// 检查已部署的后端是否与当前控制软件版本一致。
+    ///
+    /// 用户升级时通常只是替换 EXE 再双击运行，不会重跑安装向导；
+    /// 此时计划任务仍指向旧版本的启动方式，宿主程序也可能缺失。
+    /// 返回非空列表表示需要「修复安装」。
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> CheckDeploymentAsync(CancellationToken ct = default)
+    {
+        var issues = new List<string>();
+
+        if (!File.Exists(AppPaths.ControlExe))
+        {
+            issues.Add("后台宿主程序缺失（旧版本安装遗留），Agent 仍以带控制台窗口的方式启动。");
+        }
+        else
+        {
+            var installed = TryGetFileVersion(AppPaths.ControlExe);
+            var running = TryGetFileVersion(Environment.ProcessPath);
+            if (installed is not null && running is not null && installed != running)
+            {
+                issues.Add($"后台宿主版本为 {installed}，当前控制软件为 {running}。");
+            }
+        }
+
+        var query = await ProcessRunner.RunAsync(
+            ProcessRunner.SystemPath("schtasks.exe"),
+            new[] { "/Query", "/TN", AppPaths.ScheduledTaskName, "/FO", "LIST", "/V" },
+            20_000,
+            ct).ConfigureAwait(false);
+
+        if (!query.Success)
+        {
+            issues.Add("开机自启任务不存在。");
+        }
+        else if (query.StdOut.Contains("run-agent.cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            issues.Add("开机自启任务仍使用旧版 cmd 启动器，会弹出控制台窗口且日志时间戳乱码。");
+        }
+        else if (!query.StdOut.Contains("ZhanClawControl", StringComparison.OrdinalIgnoreCase))
+        {
+            issues.Add("开机自启任务未指向本程序的后台宿主模式。");
+        }
+
+        return issues;
+    }
+
+    private static string? TryGetFileVersion(string? path)
+    {
+        try
+        {
+            return string.IsNullOrWhiteSpace(path) || !File.Exists(path)
+                ? null
+                : System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 修复安装：重新部署二进制、宿主与计划任务并重启 Agent。
+    /// 不触碰 agent-config.json、swarm.key 与设备身份，因此 PeerID 与授权列表保持不变。
+    /// </summary>
+    public async Task<IReadOnlyList<InstallStep>> RepairAsync(
+        IProgress<InstallStep>? progress = null,
+        CancellationToken ct = default)
+    {
+        var steps = new List<InstallStep>();
+
+        InstallStep Record(string title, bool ok, string detail)
+        {
+            var step = new InstallStep(title, ok, detail);
+            steps.Add(step);
+            progress?.Report(step);
+            return step;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(AppPaths.InstallRoot);
+            Directory.CreateDirectory(AppPaths.LogDirectory);
+
+            if (await _task.GetStateAsync(ct).ConfigureAwait(false) != TaskState.NotInstalled)
+            {
+                await _task.StopAsync(ct).ConfigureAwait(false);
+            }
+            else
+            {
+                ScheduledTaskService.KillAgentProcesses();
+            }
+
+            await Task.Delay(1200, ct).ConfigureAwait(false);
+            Record("停止后台进程", true, "已确保目标文件未被占用");
+        }
+        catch (Exception ex)
+        {
+            Record("停止后台进程", false, ex.Message);
+            return steps;
+        }
+
+        try
+        {
+            ExtractResource(AppPaths.AgentPayloadResource, AppPaths.AgentExe);
+            Record("更新 p2p-agent.exe", true, AppPaths.AgentExe);
+        }
+        catch (Exception ex)
+        {
+            Record("更新 p2p-agent.exe", false, ex.Message);
+            return steps;
+        }
+
+        try
+        {
+            InstallControlExecutable();
+            CleanupLegacyLauncher();
+            Record("更新后台宿主", true, $"{AppPaths.ControlExe} {AgentHost.Switch}");
+        }
+        catch (Exception ex)
+        {
+            Record("更新后台宿主", false, ex.Message);
+            return steps;
+        }
+
+        var register = await _task.RegisterAsync(CurrentUserName, ct).ConfigureAwait(false);
+        Record("重建开机自启任务",
+            register.Success,
+            register.Success ? $"运行账户：{CurrentUserName}" : register.CombinedOutput);
+        if (!register.Success)
+        {
+            return steps;
+        }
+
+        var start = await _task.StartAsync(ct).ConfigureAwait(false);
+        if (!start.Success)
+        {
+            Record("启动 Agent", false, start.CombinedOutput);
+            return steps;
+        }
+
+        var ready = await WaitForReadyAsync(TimeSpan.FromSeconds(45), ct).ConfigureAwait(false);
+        Record("等待 Agent 就绪",
+            ready,
+            ready ? $"{AppPaths.ApiHost}:{AppPaths.ApiPort} 已监听" : "45 秒内未监听，请查看日志");
+
+        return steps;
+    }
+
     public static string CurrentUserName
     {
         get

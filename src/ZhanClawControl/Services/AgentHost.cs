@@ -64,9 +64,15 @@ public static class AgentHost
 
             try
             {
+                // Agent 自身输出已带 Go 风格时间戳（2026/08/13 23:34:01），不再重复加前缀，
+                // 只给缺时间戳的行补上，保证每行都可定位到时刻。
+                var text = HasLeadingTimestamp(line)
+                    ? $"{channel} {line}"
+                    : $"{DateTime.Now:yyyy/MM/dd HH:mm:ss} {channel} {line}";
+
                 lock (LogLock)
                 {
-                    writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {channel} {line}");
+                    writer.WriteLine(text);
                 }
             }
             catch
@@ -141,6 +147,12 @@ public static class AgentHost
             writer?.Dispose();
         }
     }
+
+    /// <summary>识别形如 "2026/08/13 23:34:01" 的行首时间戳。</summary>
+    private static bool HasLeadingTimestamp(string line) =>
+        line.Length >= 19 &&
+        char.IsDigit(line[0]) && char.IsDigit(line[1]) && char.IsDigit(line[2]) && char.IsDigit(line[3]) &&
+        line[4] == '/' && line[7] == '/' && line[10] == ' ' && line[13] == ':' && line[16] == ':';
 
     private static void TryKill(Process process)
     {

@@ -73,6 +73,10 @@ public static class DiagnosticsCollector
             var info = await api.GetInfoAsync(ct).ConfigureAwait(false);
             Line(info is null ? "（无响应：端口未监听、token 不可读，或请求失败）" : info.RawJson);
 
+            Section("/v1/peers 原始响应");
+            var peersRaw = await api.GetPeersRawAsync(ct).ConfigureAwait(false);
+            Line(peersRaw ?? "（无响应）");
+
             Section("/v1/peers 解析结果");
             var peers = await api.GetPeersAsync(ct).ConfigureAwait(false);
             if (peers.Count == 0)

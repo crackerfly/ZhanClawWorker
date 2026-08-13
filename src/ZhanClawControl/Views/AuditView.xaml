@@ -45,6 +45,7 @@
                         <DataGridTextColumn Header="阶段" Binding="{Binding State}" Width="110" />
                         <DataGridTextColumn Header="结果" Binding="{Binding Status}" Width="100" />
                         <DataGridTextColumn Header="耗时" Binding="{Binding DurationText}" Width="80" />
+                        <DataGridTextColumn Header="错误" Binding="{Binding Error}" Width="200" />
                         <DataGridTextColumn Header="Command ID" Binding="{Binding ShortCommandId}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>

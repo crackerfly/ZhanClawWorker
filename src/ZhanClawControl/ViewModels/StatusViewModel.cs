@@ -22,6 +22,7 @@ public sealed class StatusViewModel : ObservableObject
     private bool _isBusy;
     private int _authorizedCount;
     private string _connectivitySummary = "—";
+    private string _deploymentIssues = "";
 
     public StatusViewModel(ControlApiClient api)
     {
@@ -31,6 +32,7 @@ public sealed class StatusViewModel : ObservableObject
         StopCommand = new AsyncRelayCommand(StopAsync, () => !IsBusy && AgentRunning);
         RestartCommand = new AsyncRelayCommand(RestartAsync, () => !IsBusy);
         CopyPeerIdCommand = new RelayCommand(CopyPeerId, () => PeerId.Length > 0);
+        RepairCommand = new AsyncRelayCommand(RepairAsync, () => !IsBusy);
     }
 
     public ObservableCollection<PeerEntry> ConnectedPeers { get; } = new();
@@ -39,6 +41,22 @@ public sealed class StatusViewModel : ObservableObject
     public AsyncRelayCommand StopCommand { get; }
     public AsyncRelayCommand RestartCommand { get; }
     public RelayCommand CopyPeerIdCommand { get; }
+    public AsyncRelayCommand RepairCommand { get; }
+
+    /// <summary>升级 GUI 后未重新部署后端时的提示文本，为空表示部署一致。</summary>
+    public string DeploymentIssues
+    {
+        get => _deploymentIssues;
+        private set
+        {
+            if (SetProperty(ref _deploymentIssues, value))
+            {
+                OnPropertyChanged(nameof(ShowDeploymentWarning));
+            }
+        }
+    }
+
+    public bool ShowDeploymentWarning => DeploymentIssues.Length > 0;
 
     public bool AgentRunning
     {
@@ -135,6 +153,7 @@ public sealed class StatusViewModel : ObservableObject
                 StartCommand.RaiseCanExecuteChanged();
                 StopCommand.RaiseCanExecuteChanged();
                 RestartCommand.RaiseCanExecuteChanged();
+                RepairCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -170,7 +189,6 @@ public sealed class StatusViewModel : ObservableObject
                 PeerId = info.PeerId;
                 AgentVersion = info.Version;
                 AgentName = info.AgentName;
-                ConnectivitySummary = BuildConnectivitySummary(info);
 
                 StatusHeadline = "本机已接入 P2P 网络";
                 StatusDetail = AuthorizedCount == 0
@@ -186,6 +204,7 @@ public sealed class StatusViewModel : ObservableObject
 
             var peers = await _api.GetPeersAsync(ct).ConfigureAwait(true);
             SyncPeers(peers);
+            ConnectivitySummary = BuildConnectivitySummary(peers);
         }
         else
         {
@@ -205,45 +224,114 @@ public sealed class StatusViewModel : ObservableObject
         _log.RollIfNeeded();
     }
 
-    private static string BuildConnectivitySummary(AgentInfo info)
+    /// <summary>
+    /// /v1/info 实际只返回 peer_id 与 version（富网络信息在 fleet_inspect 输出里，不在该接口），
+    /// 因此连通性摘要基于 /v1/peers 的实际结果与已授权列表的交集。
+    /// </summary>
+    private string BuildConnectivitySummary(IReadOnlyList<PeerEntry> peers)
     {
-        var parts = new List<string>();
-
-        if (info.ReservationReady is { } reservation)
+        if (peers.Count == 0)
         {
-            parts.Add(reservation ? "中继预留已就绪" : "中继预留未就绪");
+            return "未连接任何远端设备";
         }
 
-        if (info.RelayPeerId.Length > 0)
+        var authorizedOnline = peers.Count(p => AuthorizedPeerIds.Contains(p.PeerId));
+        var summary = $"已连接 {peers.Count} 个远端设备";
+
+        if (AuthorizedPeerIds.Count > 0)
         {
-            parts.Add($"中继 {Shorten(info.RelayPeerId)}");
+            summary += authorizedOnline > 0
+                ? $"，其中 {authorizedOnline} 个是已授权主控"
+                : "，但没有一个是已授权主控";
         }
 
-        if (info.MdnsReady is { } mdns)
+        var paths = peers
+            .Select(p => p.ConnectionPath)
+            .Where(p => p.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (paths.Count > 0)
         {
-            parts.Add(mdns ? "局域网发现已启用" : "局域网发现未启用");
+            summary += $"（路径：{string.Join("、", paths)}）";
         }
 
-        if (info.ConnectedRemoteCount is { } connected)
-        {
-            parts.Add($"已连接 {connected} 个远端");
-        }
-
-        if (info.RunningTasks is { } running && info.AvailableTaskSlots is { } slots)
-        {
-            parts.Add($"任务 {running} 运行中 / {slots} 空闲槽位");
-        }
-
-        if (info.ListenAddresses.Count > 0)
-        {
-            parts.Add($"监听 {info.ListenAddresses.Count} 个地址");
-        }
-
-        return parts.Count == 0 ? "—" : string.Join("，", parts);
+        return summary;
     }
 
-    private static string Shorten(string value) =>
-        value.Length > 14 ? $"{value[..6]}…{value[^6..]}" : value;
+    /// <summary>已授权主控的 PeerID 集合，由主 ViewModel 在刷新时注入。</summary>
+    public HashSet<string> AuthorizedPeerIds { get; } = new(StringComparer.Ordinal);
+
+    private async Task RepairAsync()
+    {
+        var confirm = MessageBox.Show(
+            "修复安装会重新部署 Agent 程序、后台宿主与开机自启任务，并重启 Agent。\n\n" +
+            "配置、设备身份与授权列表不会改变，PeerID 保持不变。\n\n继续？",
+            "修复安装",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Question);
+
+        if (confirm != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        BusyMessage = "正在修复安装…";
+
+        try
+        {
+            var installer = new InstallerService();
+            var steps = await installer.RepairAsync().ConfigureAwait(true);
+            var failed = steps.Where(step => !step.Success).ToList();
+
+            if (failed.Count > 0)
+            {
+                MessageBox.Show(
+                    "修复未完成：\n\n" +
+                    string.Join(Environment.NewLine, failed.Select(step => $"· {step.Title}：{step.Detail}")),
+                    AppInfo.ProductName,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+            else
+            {
+                MessageBox.Show(
+                    "修复完成。后台已改为无窗口方式运行，日志将带统一时间戳。",
+                    AppInfo.ProductName,
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"修复失败：{ex.Message}", AppInfo.ProductName,
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+            BusyMessage = "";
+        }
+
+        await CheckDeploymentAsync().ConfigureAwait(true);
+        await RefreshAsync().ConfigureAwait(true);
+    }
+
+    public async Task CheckDeploymentAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var issues = await InstallerService.CheckDeploymentAsync(ct).ConfigureAwait(true);
+            DeploymentIssues = issues.Count == 0
+                ? ""
+                : string.Join(Environment.NewLine, issues.Select(i => "· " + i));
+        }
+        catch
+        {
+            DeploymentIssues = "";
+        }
+    }
 
     private void SyncPeers(IReadOnlyList<PeerEntry> peers)
     {

@@ -128,7 +128,8 @@ public sealed class AuditViewModel : ObservableObject
                 r.SourcePeer.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                 r.CommandId.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                 r.Status.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-                r.State.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+                r.State.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
+                r.Error.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
         foreach (var record in query)
         {

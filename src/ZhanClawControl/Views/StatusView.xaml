@@ -37,6 +37,27 @@
                 </Grid>
             </Border>
 
+            <!-- 部署不一致告警：升级 GUI 后未重新部署后端 -->
+            <Border Style="{StaticResource Card}"
+                    Visibility="{Binding ShowDeploymentWarning, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                                   Foreground="{DynamicResource WarningBrush}" VerticalAlignment="Top" Margin="0,2,12,0" />
+                        <StackPanel>
+                            <TextBlock Text="后台部署与当前版本不一致" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding DeploymentIssues}" Style="{StaticResource CaptionText}"
+                                       Margin="0,4,0,0" />
+                            <TextBlock Style="{StaticResource CaptionText}" Margin="0,6,0,0"
+                                       Text="升级控制软件后需要重新部署后端。修复不会改变配置、设备身份与授权列表，PeerID 保持不变。" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Button Content="修复安装" Style="{StaticResource AccentButton}"
+                            HorizontalAlignment="Left" Margin="30,12,0,0" MinWidth="110"
+                            Command="{Binding RepairCommand}" />
+                </StackPanel>
+            </Border>
+
             <!-- 授权提示 -->
             <Border Style="{StaticResource Card}"
                     Visibility="{Binding ShowNoAuthorizationWarning, Converter={StaticResource BoolToVisibility}}">
