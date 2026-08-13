@@ -20,7 +20,8 @@ public sealed class AuditViewModel : ObservableObject
 
     public AuditViewModel()
     {
-        RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsBusy);
+        // RefreshAsync 带可选的 CancellationToken 参数，方法组无法隐式转成 Func<Task>
+        RefreshCommand = new AsyncRelayCommand(() => RefreshAsync(), () => !IsBusy);
         ExportJournalCommand = new RelayCommand(ExportJournal);
         ClearLogCommand = new RelayCommand(ClearLog);
         OpenDataFolderCommand = new RelayCommand(OpenDataFolder);

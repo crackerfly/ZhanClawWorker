@@ -78,21 +78,18 @@ public sealed class ThemeService
         var dict = new ResourceDictionary { Source = theme == AppTheme.Dark ? DarkUri : LightUri };
         var merged = Application.Current.Resources.MergedDictionaries;
 
-        if (_current is not null)
+        // WPF 在合并字典中按「后加入者优先」的逆序查找。
+        // 因此必须替换 App.xaml 中已声明的那个主题字典，
+        // 而不是再插入一个 —— 否则切到深色时，仍留在后面的浅色字典会把深色画刷全部覆盖掉。
+        _current ??= FindDeclaredThemeDictionary(merged);
+
+        var index = _current is null ? -1 : merged.IndexOf(_current);
+        if (index >= 0)
         {
-            var index = merged.IndexOf(_current);
-            if (index >= 0)
-            {
-                merged[index] = dict;
-            }
-            else
-            {
-                merged.Insert(0, dict);
-            }
+            merged[index] = dict;
         }
         else
         {
-            // 主题字典必须排在 Controls.xaml 之前，DynamicResource 才能解析到
             merged.Insert(0, dict);
         }
 
@@ -105,6 +102,28 @@ public sealed class ThemeService
         }
 
         ThemeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>定位 App.xaml 里声明的 Light/Dark 字典，首次应用主题时接管它。</summary>
+    private static ResourceDictionary? FindDeclaredThemeDictionary(
+        IList<ResourceDictionary> merged)
+    {
+        foreach (var dictionary in merged)
+        {
+            var source = dictionary.Source?.OriginalString;
+            if (source is null)
+            {
+                continue;
+            }
+
+            if (source.EndsWith("Themes/Light.xaml", StringComparison.OrdinalIgnoreCase) ||
+                source.EndsWith("Themes/Dark.xaml", StringComparison.OrdinalIgnoreCase))
+            {
+                return dictionary;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>注册窗口以接收标题栏深色处理与系统主题变更通知。</summary>
