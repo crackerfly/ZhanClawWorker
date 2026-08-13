@@ -16,7 +16,12 @@ public partial class MainWindow : Window
     private readonly MainViewModel _viewModel = new();
     private readonly UiStateService _uiState = new();
     private WinForms.NotifyIcon? _trayIcon;
+
+    // 用户确认退出程序（而非最小化到托盘）
     private bool _reallyExit;
+
+    // Shutdown 只允许发起一次
+    private bool _shutdownInvoked;
 
     public MainWindow()
     {
@@ -30,7 +35,7 @@ public partial class MainWindow : Window
         _viewModel.Settings.UninstallCompleted += (_, _) =>
         {
             _reallyExit = true;
-            Application.Current.Shutdown();
+            RequestShutdown();
         };
     }
 
@@ -87,7 +92,7 @@ public partial class MainWindow : Window
                 if (confirm == MessageBoxResult.OK)
                 {
                     _reallyExit = true;
-                    Application.Current.Shutdown();
+                    RequestShutdown();
                 }
             };
             menu.Items.Add(exitItem);
@@ -125,6 +130,21 @@ public partial class MainWindow : Window
         Topmost = false;
     }
 
+    /// <summary>
+    /// 统一的退出入口。绝不能在 Closing 事件中调用 ——
+    /// Shutdown 会去关闭正在关闭的窗口，WPF 会抛 "while a Window is closing"。
+    /// </summary>
+    private void RequestShutdown()
+    {
+        if (_shutdownInvoked)
+        {
+            return;
+        }
+
+        _shutdownInvoked = true;
+        Application.Current.Shutdown();
+    }
+
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         if (_reallyExit)
@@ -136,12 +156,11 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             Hide();
+            return;
         }
-        else
-        {
-            _reallyExit = true;
-            Application.Current.Shutdown();
-        }
+
+        // 放行关闭，真正的退出推迟到 OnClosed
+        _reallyExit = true;
     }
 
     private void OnClosed(object? sender, EventArgs e)
@@ -154,5 +173,7 @@ public partial class MainWindow : Window
             _trayIcon.Dispose();
             _trayIcon = null;
         }
+
+        RequestShutdown();
     }
 }

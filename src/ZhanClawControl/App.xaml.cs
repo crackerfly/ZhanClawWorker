@@ -55,10 +55,9 @@ public partial class App : Application
         var wizard = new Views.WizardWindow();
         Theme.Track(wizard);
 
+        // Completed 在窗口 Closed 之后触发，这里不需要（也不能）再调用 Close()
         wizard.Completed += (_, success) =>
         {
-            wizard.Close();
-
             if (success)
             {
                 ShowMainWindow();
