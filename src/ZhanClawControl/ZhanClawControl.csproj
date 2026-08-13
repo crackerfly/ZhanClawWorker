@@ -22,6 +22,17 @@
     -->
   </PropertyGroup>
 
+  <!--
+    UseWindowsForms 仅用于托盘图标 NotifyIcon。
+    但它会随 ImplicitUsings 注入 global using System.Windows.Forms / System.Drawing，
+    导致每个文件里 UserControl、Application、MessageBox 等与 WPF 同名类型冲突。
+    这里移除这两个隐式 using，需要 WinForms 的文件用命名空间别名显式引入。
+  -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
   <PropertyGroup>
     <Product>战Claw多电脑聚控智能被控端</Product>
     <AssemblyTitle>战Claw多电脑聚控智能被控端</AssemblyTitle>

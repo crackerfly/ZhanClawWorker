@@ -1,11 +1,13 @@
 using System.ComponentModel;
-using System.Drawing;
 using System.Windows;
-using System.Windows.Forms;
 using ZhanClawControl.Services;
 using ZhanClawControl.ViewModels;
-using Application = System.Windows.Application;
-using MessageBox = System.Windows.MessageBox;
+
+// WinForms 与 System.Drawing 只在托盘图标处使用。
+// 用命名空间别名而不是 using 指令引入，避免 UserControl / Application / MessageBox 等
+// 与 WPF 同名类型产生歧义。
+using WinForms = System.Windows.Forms;
+using Drawing = System.Drawing;
 
 namespace ZhanClawControl.Views;
 
@@ -13,7 +15,7 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
     private readonly UiStateService _uiState = new();
-    private NotifyIcon? _trayIcon;
+    private WinForms.NotifyIcon? _trayIcon;
     private bool _reallyExit;
 
     public MainWindow()
@@ -55,22 +57,24 @@ public partial class MainWindow : Window
             var iconStream = Application.GetResourceStream(
                 new Uri("pack://application:,,,/Assets/app.ico"))?.Stream;
 
-            _trayIcon = new NotifyIcon
+            _trayIcon = new WinForms.NotifyIcon
             {
-                Icon = iconStream is not null ? new Icon(iconStream) : SystemIcons.Application,
+                Icon = iconStream is not null
+                    ? new Drawing.Icon(iconStream)
+                    : Drawing.SystemIcons.Application,
                 Visible = true,
                 Text = AppInfo.ProductName
             };
 
-            var menu = new ContextMenuStrip();
+            var menu = new WinForms.ContextMenuStrip();
 
-            var openItem = new ToolStripMenuItem("打开主窗口");
+            var openItem = new WinForms.ToolStripMenuItem("打开主窗口");
             openItem.Click += (_, _) => RestoreWindow();
             menu.Items.Add(openItem);
 
-            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new WinForms.ToolStripSeparator());
 
-            var exitItem = new ToolStripMenuItem("退出控制软件");
+            var exitItem = new WinForms.ToolStripMenuItem("退出控制软件");
             exitItem.Click += (_, _) =>
             {
                 var confirm = MessageBox.Show(
