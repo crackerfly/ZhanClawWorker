@@ -83,6 +83,9 @@
 
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
+    <!-- Keep the exact user-supplied 1024 px source beside the generated
+         multi-resolution ICO so future icon updates remain reproducible. -->
+    <Resource Include="Assets\icon.png" />
   </ItemGroup>
 
 </Project>

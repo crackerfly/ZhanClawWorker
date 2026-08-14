@@ -1,62 +1,101 @@
+#nullable disable warnings
 using System.IO;
 
 namespace ZhanClawControl.Services;
 
-/// <summary>
-/// 所有固定路径与常量集中在此。与 install-openclaw-integration.ps1 的 Worker 模式保持一致。
-/// </summary>
 public static class AppPaths
 {
-    public const string InstallRoot = @"C:\Program Files\P2PAgent";
-    public const string DataRoot = @"C:\ProgramData\P2PAgent";
-    public const string ScheduledTaskName = "P2P Agent";
+	public const string InstallRoot = "C:\\Program Files\\P2PAgent";
 
-    public static string AgentExe => Path.Combine(InstallRoot, "p2p-agent.exe");
+	public const string DataRoot = "C:\\ProgramData\\P2PAgent";
 
-    /// <summary>安装到程序目录的控制软件副本；计划任务执行的就是它（--run-agent 宿主模式）。</summary>
-    public static string ControlExe => Path.Combine(InstallRoot, "ZhanClawControl.exe");
+	public const string ScheduledTaskName = "P2P Agent";
 
-    /// <summary>早期版本使用的 cmd 启动器，现已废弃，安装时清理。</summary>
-    public static string LegacyLauncherCmd => Path.Combine(DataRoot, "run-agent.cmd");
-    public static string ConfigFile => Path.Combine(DataRoot, "agent-config.json");
-    public static string SwarmKeyFile => Path.Combine(DataRoot, "swarm.key");
-    public static string IdentityFile => Path.Combine(DataRoot, "agent-identity.key");
-    public static string ApiTokenFile => Path.Combine(DataRoot, "agent-api.token");
-    public static string JournalFile => Path.Combine(DataRoot, "agent-command-journal.jsonl");
+	public const string FirewallRuleName = "StarSoftComm ZhanClaw P2P Agent - Private Inbound";
 
-    public static string LogDirectory => Path.Combine(DataRoot, "logs");
-    public static string AgentLogFile => Path.Combine(LogDirectory, "agent.log");
-    public static string AgentLogRollFile => Path.Combine(LogDirectory, "agent.log.1");
+	public const string IdentityProvisioningMarkerContent = "ZhanClawControl identity provisioning v1\n";
 
-    /// <summary>本程序自身的元数据（备注名等），不含任何机密。</summary>
-    public static string UiStateFile => Path.Combine(DataRoot, "control-ui-state.json");
+	public const string TokenProvisioningMarkerContent = "ZhanClawControl api token provisioning v1\n";
 
-    public const string ApiHost = "127.0.0.1";
-    public const int ApiPort = 7432;
-    public static string ApiBaseUrl => $"http://{ApiHost}:{ApiPort}";
+	public const string LegacyTaskMaintenanceEnabledContent = "ZhanClawControl task maintenance v1 enabled\n";
 
-    /// <summary>Agent 日志滚动阈值（字节）。</summary>
-    public const long LogRollThresholdBytes = 8L * 1024 * 1024;
+	public const string LegacyTaskMaintenanceDisabledContent = "ZhanClawControl task maintenance v1 disabled\n";
 
-    /// <summary>
-    /// 默认 bootstrap 地址。若服务器地址或 PeerID 变更，只需修改此处。
-    /// </summary>
-    public static readonly string[] DefaultBootstrapAddrs =
-    {
-        "/ip4/101.133.233.151/tcp/4001/p2p/12D3KooWJjWc44NKy8SrAa6bXTzm8Z9yq1aeeYSTfWy9jrbuZKJE",
-        "/ip4/101.133.233.151/tcp/4002/ws/p2p/12D3KooWJjWc44NKy8SrAa6bXTzm8Z9yq1aeeYSTfWy9jrbuZKJE"
-    };
+	public const string TaskMaintenanceMutationEnabledContent = "ZhanClawControl task maintenance v2 mutation enabled\n";
 
-    public const string DefaultRendezvousGroup = "p2p-agents";
-    public const int DefaultMaxParallelTasks = 4;
-    public const long DefaultMaxTransferBytes = 8L * 1024 * 1024 * 1024;
+	public const string TaskMaintenanceMutationDisabledContent = "ZhanClawControl task maintenance v2 mutation disabled\n";
 
-    /// <summary>嵌入资源名：Agent 主程序。</summary>
-    public const string AgentPayloadResource = "ZhanClawControl.payload.p2p-agent.exe";
+	public const string TaskMaintenanceValidationReadyEnabledContent = "ZhanClawControl task maintenance v2 validation-ready enabled\n";
 
-    /// <summary>嵌入资源名：可选的 swarm.key。</summary>
-    public const string SwarmKeyPayloadResource = "ZhanClawControl.payload.swarm.key";
+	public const string TaskMaintenanceValidationReadyDisabledContent = "ZhanClawControl task maintenance v2 validation-ready disabled\n";
 
-    /// <summary>Agent payload 的冻结哈希、随哈希审查的版本元数据与签名策略。</summary>
-    public const string PayloadManifestResource = "ZhanClawControl.payload.payload-manifest.json";
+	public const string MaintenanceStartPermitHeader = "ZhanClawControl maintenance start permit v1";
+
+	public const string ApiHost = "127.0.0.1";
+
+	public const int ApiPort = 7432;
+
+	public const long LogRollThresholdBytes = 8388608L;
+
+	public static readonly string[] DefaultBootstrapAddrs = new string[2] { "/ip4/101.133.233.151/tcp/4001/p2p/12D3KooWJjWc44NKy8SrAa6bXTzm8Z9yq1aeeYSTfWy9jrbuZKJE", "/ip4/101.133.233.151/tcp/4002/ws/p2p/12D3KooWJjWc44NKy8SrAa6bXTzm8Z9yq1aeeYSTfWy9jrbuZKJE" };
+
+	public const string DefaultRendezvousGroup = "p2p-agents";
+
+	public const int DefaultMaxParallelTasks = 4;
+
+	public const long DefaultMaxTransferBytes = 8589934592L;
+
+	public const string AgentPayloadResource = "ZhanClawControl.payload.p2p-agent.exe";
+
+	public const string SwarmKeyPayloadResource = "ZhanClawControl.payload.swarm.key";
+
+	public const string PayloadManifestResource = "ZhanClawControl.payload.payload-manifest.json";
+
+	public static string AgentExe => Path.Combine("C:\\Program Files\\P2PAgent", "p2p-agent.exe");
+
+	public static string ControlExe => Path.Combine("C:\\Program Files\\P2PAgent", "ZhanClawControl.exe");
+
+	public static string IdentityProvisioningMarker => Path.Combine("C:\\Program Files\\P2PAgent", ".identity-provisioning-v1");
+
+	public static string TokenProvisioningMarker => Path.Combine("C:\\Program Files\\P2PAgent", ".api-token-provisioning-v1");
+
+	public static string TaskMaintenanceMarker => Path.Combine("C:\\Program Files\\P2PAgent", ".task-maintenance-v1");
+
+	public static string TaskMaintenanceCleanupMarker => Path.Combine("C:\\Program Files\\P2PAgent", ".task-maintenance-cleanup-v1");
+
+	public static string MaintenanceStartPermit => Path.Combine("C:\\Program Files\\P2PAgent", ".maintenance-start-permit-v1");
+
+	public static string UninstallRecoveryRoot => Path.Combine("C:\\Program Files\\P2PAgent", ".uninstall-recovery-v1");
+
+	public static string UninstallRecoveryStageRoot => Path.Combine("C:\\Program Files\\P2PAgent", ".uninstall-recovery-stage-v1");
+
+	public static string UninstallRecoveryCleanupRoot => Path.Combine("C:\\Program Files\\P2PAgent", ".uninstall-recovery-cleanup-v1");
+
+	public static string UninstallRecoveryStateFile => Path.Combine(UninstallRecoveryRoot, "state.json");
+
+	public static string UninstallRecoveryBackupRoot => Path.Combine(UninstallRecoveryRoot, "rollback");
+
+	public static string UninstallRecoveryDataRoot => Path.Combine(UninstallRecoveryRoot, "data");
+
+	public static string LegacyLauncherCmd => Path.Combine("C:\\ProgramData\\P2PAgent", "run-agent.cmd");
+
+	public static string ConfigFile => Path.Combine("C:\\ProgramData\\P2PAgent", "agent-config.json");
+
+	public static string SwarmKeyFile => Path.Combine("C:\\ProgramData\\P2PAgent", "swarm.key");
+
+	public static string IdentityFile => Path.Combine("C:\\ProgramData\\P2PAgent", "agent-identity.key");
+
+	public static string ApiTokenFile => Path.Combine("C:\\ProgramData\\P2PAgent", "agent-api.token");
+
+	public static string JournalFile => Path.Combine("C:\\ProgramData\\P2PAgent", "agent-command-journal.jsonl");
+
+	public static string LogDirectory => Path.Combine("C:\\ProgramData\\P2PAgent", "logs");
+
+	public static string AgentLogFile => Path.Combine(LogDirectory, "agent.log");
+
+	public static string AgentLogRollFile => Path.Combine(LogDirectory, "agent.log.1");
+
+	public static string UiStateFile => Path.Combine("C:\\ProgramData\\P2PAgent", "control-ui-state.json");
+
+	public static string ApiBaseUrl => $"http://{"127.0.0.1"}:{7432}";
 }

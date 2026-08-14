@@ -38,20 +38,23 @@
 
         <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,0,0,14">
             <DockPanel>
-                <TextBlock DockPanel.Dock="Bottom" Text="{Binding JournalSummary}" Style="{StaticResource CaptionText}"
-                           Margin="0,10,0,0" />
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                    <TextBlock Text="{Binding JournalSummary}" Style="{StaticResource CaptionText}" />
+                    <TextBlock Text="{DynamicResource AuditJournalContractHelp}" Style="{StaticResource CaptionText}"
+                               Margin="0,4,0,0" TextWrapping="Wrap" />
+                </StackPanel>
                 <DataGrid ItemsSource="{Binding Records}">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="{DynamicResource ColumnTime}" Binding="{Binding TimestampText}" Width="125" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnSource}" Binding="{Binding ShortSourcePeer}" Width="140" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnAction}" Binding="{Binding Action}" Width="150" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnState}" Binding="{Binding State}" Width="105" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnResult}" Binding="{Binding Status}" Width="90" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnAck}" Binding="{Binding AcknowledgedText}" Width="65" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnDuration}" Binding="{Binding DurationText}" Width="75" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnError}" Binding="{Binding Error}" Width="160" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnParse}" Binding="{Binding ParseError}" Width="120" />
-                        <DataGridTextColumn Header="{DynamicResource ColumnCommandId}" Binding="{Binding ShortCommandId}" Width="*" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnTime}" Binding="{Binding TimestampText, Mode=OneWay}" Width="125" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnSource}" Binding="{Binding ShortSourcePeer, Mode=OneWay}" Width="140" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnAction}" Binding="{Binding Action, Mode=OneWay}" Width="150" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnState}" Binding="{Binding State, Mode=OneWay}" Width="105" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnResult}" Binding="{Binding Status, Mode=OneWay}" Width="90" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnAck}" Binding="{Binding AcknowledgedText, Mode=OneWay}" Width="65" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnDuration}" Binding="{Binding DurationText, Mode=OneWay}" Width="75" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnError}" Binding="{Binding Error, Mode=OneWay}" Width="160" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnParse}" Binding="{Binding ParseError, Mode=OneWay}" Width="120" />
+                        <DataGridTextColumn Header="{DynamicResource ColumnCommandId}" Binding="{Binding ShortCommandId, Mode=OneWay}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
             </DockPanel>
@@ -68,9 +71,9 @@
 
         <Border Grid.Row="4" Style="{StaticResource Card}" Margin="0" Padding="0">
             <TextBox Text="{Binding LogText, Mode=OneWay}" IsReadOnly="True" BorderThickness="0"
-                     Background="Transparent" FontFamily="Cascadia Mono, Consolas" FontSize="12"
+                     Background="Transparent" FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                     TextWrapping="NoWrap" Padding="14,12" VerticalContentAlignment="Top"
+                     TextWrapping="NoWrap" Padding="14,12" VerticalContentAlignment="Top" MinHeight="0"
                      AutomationProperties.Name="{DynamicResource AuditRuntimeLog}" />
         </Border>
     </Grid>

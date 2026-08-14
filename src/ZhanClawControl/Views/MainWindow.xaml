@@ -6,7 +6,7 @@
         Height="720" Width="1120" MinHeight="600" MinWidth="940"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource WindowBackgroundBrush}"
-        FontFamily="Segoe UI Variable Text, Segoe UI"
+        FontFamily="{StaticResource AppFontFamily}"
         TextOptions.TextFormattingMode="Display" UseLayoutRounding="True">
     <Grid>
         <Grid.ColumnDefinitions>

@@ -4,7 +4,7 @@
         xmlns:views="clr-namespace:ZhanClawControl.Views"
         Title="{DynamicResource WizardTitle}" Height="680" Width="820" MinHeight="600" MinWidth="720"
         WindowStartupLocation="CenterScreen" Background="{DynamicResource WindowBackgroundBrush}"
-        FontFamily="Segoe UI Variable Text, Segoe UI" TextOptions.TextFormattingMode="Display" UseLayoutRounding="True">
+        FontFamily="{StaticResource AppFontFamily}" TextOptions.TextFormattingMode="Display" UseLayoutRounding="True">
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Border Padding="30,24" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,0,0,1">
@@ -60,13 +60,15 @@
                                 </Grid>
                                 <TextBlock Text="{Binding SwarmKeyStatus}" Style="{StaticResource CaptionText}" />
                             </StackPanel>
+                            <TextBlock Text="{DynamicResource WizardNetworkDefaultHelp}" Style="{StaticResource CaptionText}"
+                                       Margin="0,12,0,0" TextWrapping="Wrap" />
                         </StackPanel>
                     </Border>
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Text="{DynamicResource WizardRunAccount}" Style="{StaticResource SectionTitle}" />
                             <TextBlock Text="{DynamicResource WizardRunAccountHelp}" Style="{StaticResource CaptionText}" Margin="0,0,0,10" />
-                            <TextBox Text="{Binding RunAsUser, UpdateSourceTrigger=PropertyChanged}" FontFamily="Cascadia Mono, Consolas"
+                            <TextBox Text="{Binding RunAsUser, UpdateSourceTrigger=PropertyChanged}" FontFamily="{StaticResource MonoFontFamily}"
                                      AutomationProperties.Name="{DynamicResource WizardRunAccount}" />
                         </StackPanel>
                     </Border>
@@ -78,7 +80,7 @@
                             <TextBlock Text="{DynamicResource WizardControllerPeerId}" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
                             <Grid Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBox Text="{Binding ControllerPeerId, UpdateSourceTrigger=PropertyChanged}" FontFamily="Cascadia Mono, Consolas"
+                                <TextBox Text="{Binding ControllerPeerId, UpdateSourceTrigger=PropertyChanged}" FontFamily="{StaticResource MonoFontFamily}"
                                          AutomationProperties.Name="{DynamicResource WizardControllerPeerId}" />
                                 <Button Grid.Column="1" Content="{DynamicResource CommonPaste}" Margin="8,0,0,0"
                                         Command="{Binding PastePeerIdCommand}" />
@@ -106,9 +108,26 @@
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Text="{DynamicResource WizardSecurityOptions}" Style="{StaticResource SectionTitle}" />
-                            <CheckBox IsChecked="{Binding HardenAcl}" IsEnabled="False"
+                            <!-- CheckBox.IsChecked defaults to TwoWay. HardenAcl is a read-only
+                                 status property, so the display binding must be explicitly OneWay. -->
+                            <CheckBox IsChecked="{Binding HardenAcl, Mode=OneWay}" IsEnabled="False"
                                       Content="{DynamicResource WizardHardenAcl}" />
                         </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource Card}">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <views:PhosphorIcon Width="20" Height="20" Margin="0,1,12,0" VerticalAlignment="Top"
+                                                   Primary="{x:Static views:PhosphorIcons.Warning}"
+                                                   Secondary="{x:Static views:PhosphorIcons.WarningSecondary}"
+                                                   Foreground="{DynamicResource WarningBrush}"
+                                                   AutomationProperties.Name="{DynamicResource SettingsRuntimeRiskTitle}" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="{DynamicResource SettingsRuntimeRiskTitle}" FontWeight="SemiBold" />
+                                <TextBlock Text="{DynamicResource SettingsRuntimeRiskHelp}" Style="{StaticResource CaptionText}"
+                                           Margin="0,4,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
                     </Border>
                 </StackPanel>
 
@@ -140,6 +159,16 @@
                                             <StackPanel Grid.Column="1">
                                                 <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
                                                 <TextBlock Text="{Binding Detail}" Style="{StaticResource CaptionText}" Margin="0,2,0,0" />
+                                                <TextBlock Text="{DynamicResource InstallTechnicalDetail}"
+                                                           Style="{StaticResource CaptionText}" Margin="0,8,0,3"
+                                                           Visibility="{Binding Success, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                                                <TextBox Text="{Binding TechnicalDetail, Mode=OneWay}"
+                                                         IsReadOnly="True" IsReadOnlyCaretVisible="True"
+                                                         TextWrapping="Wrap" MaxHeight="120" MinHeight="0"
+                                                         VerticalContentAlignment="Top"
+                                                         VerticalScrollBarVisibility="Auto"
+                                                         FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                                                         Visibility="{Binding Success, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
                                             </StackPanel>
                                         </Grid>
                                     </DataTemplate>
@@ -147,6 +176,8 @@
                             </ItemsControl>
                             <TextBlock Text="{DynamicResource WizardInstalling}" Style="{StaticResource CaptionText}" Margin="0,6,0,0"
                                        Visibility="{Binding Installing, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Text="{Binding CompletionMessage}" Style="{StaticResource CaptionText}" Margin="0,8,0,0"
+                                       Visibility="{Binding CompletionMessage, Converter={StaticResource StringNotEmptyToVisibility}}" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -162,7 +193,10 @@
                             Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
                     <Button Content="{DynamicResource WizardInstall}" Style="{StaticResource AccentButton}"
                             Command="{Binding InstallCommand}" Margin="0,0,8,0"
-                            Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibility}}" />
+                            Visibility="{Binding ShowInstallButton, Converter={StaticResource BoolToVisibility}}" />
+                    <Button Content="{DynamicResource WizardRetry}" Style="{StaticResource AccentButton}"
+                            Command="{Binding RetryCommand}" Margin="0,0,8,0"
+                            Visibility="{Binding ShowRetryButton, Converter={StaticResource BoolToVisibility}}" />
                     <Button Content="{DynamicResource WizardFinish}" Command="{Binding FinishCommand}"
                             Visibility="{Binding Finished, Converter={StaticResource BoolToVisibility}}" />
                 </StackPanel>

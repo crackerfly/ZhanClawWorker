@@ -71,10 +71,9 @@ public sealed class PhosphorIcon : FrameworkElement
 
         if (Secondary is not null)
         {
-            var secondaryBrush = Foreground.CloneCurrentValue();
-            secondaryBrush.Opacity *= 0.2;
-            secondaryBrush.Freeze();
-            drawingContext.DrawGeometry(secondaryBrush, null, Secondary);
+            drawingContext.PushOpacity(0.2);
+            drawingContext.DrawGeometry(Foreground, null, Secondary);
+            drawingContext.Pop();
         }
 
         drawingContext.DrawGeometry(Foreground, null, Primary);

@@ -89,10 +89,18 @@ jobs:
             [Convert]::FromBase64String($env:SWARM_KEY_B64))
           Write-Host '已从 Secret 写出 runtime/swarm.key'
 
-      - name: Confirm swarm.key embedded
+      - name: Confirm payload and swarm.key (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          ./scripts/Test-Payload.ps1 -RequireSwarmKey
+
+      - name: Confirm payload and swarm.key (PowerShell 7)
         shell: pwsh
         run: |
           ./scripts/Test-Payload.ps1 -RequireSwarmKey
+
+      - name: Verify source, localization, bindings, and dialogs
+        run: python scripts/verify_source.py
 
       - name: Publish
         shell: pwsh

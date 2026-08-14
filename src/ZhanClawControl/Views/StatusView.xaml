@@ -16,7 +16,7 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <Ellipse Width="10" Height="10" VerticalAlignment="Top" Margin="0,6,14,0"
-                             Fill="{Binding AgentRunning, Converter={StaticResource BoolToStatusBrush}}" />
+                             Fill="{Binding ApiHealthy, Converter={StaticResource BoolToStatusBrush}}" />
                     <StackPanel Grid.Column="1" Margin="0,0,18,0">
                         <TextBlock Text="{Binding StatusHeadline}" FontSize="16" FontWeight="SemiBold"
                                    TextWrapping="Wrap" />
@@ -76,7 +76,7 @@
                         <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBlock Text="{DynamicResource StatusPeerId}" Style="{StaticResource CaptionText}" VerticalAlignment="Center" />
                         <TextBox Grid.Column="1" Text="{Binding PeerId, Mode=OneWay}" IsReadOnly="True"
-                                 FontFamily="Cascadia Mono, Consolas"
+                                 FontFamily="{StaticResource MonoFontFamily}"
                                  AutomationProperties.Name="{DynamicResource StatusPeerId}" />
                         <Button Grid.Column="2" Content="{DynamicResource CommonCopy}" Margin="8,0,0,0"
                                 Command="{Binding CopyPeerIdCommand}" />
@@ -108,6 +108,8 @@
                         <TextBlock Text="{DynamicResource StatusConnectivity}" Style="{StaticResource CaptionText}" />
                         <TextBlock Grid.Column="1" Text="{Binding ConnectivitySummary}" TextWrapping="Wrap" />
                     </Grid>
+                    <TextBlock Text="{DynamicResource StatusNetworkHelp}" Style="{StaticResource CaptionText}"
+                               Margin="150,10,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
@@ -118,10 +120,8 @@
                                Margin="0,0,0,12" />
                     <DataGrid ItemsSource="{Binding ConnectedPeers}" MaxHeight="240">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="{DynamicResource ColumnPeerId}" Binding="{Binding ShortPeerId}" Width="190" />
-                            <DataGridTextColumn Header="{DynamicResource ColumnName}" Binding="{Binding Name}" Width="*" />
-                            <DataGridTextColumn Header="{DynamicResource ColumnPath}" Binding="{Binding ConnectionPath}" Width="200" />
-                            <DataGridTextColumn Header="{DynamicResource ColumnScope}" Binding="{Binding Scope}" Width="110" />
+                            <DataGridTextColumn Header="{DynamicResource ColumnPeerId}" Binding="{Binding ShortPeerId, Mode=OneWay}" Width="190" />
+                            <DataGridTextColumn Header="{DynamicResource ColumnPath}" Binding="{Binding ConnectionPath, Mode=OneWay}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </StackPanel>

@@ -1,431 +1,707 @@
+#nullable disable warnings
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using ZhanClawControl.Infrastructure;
 using ZhanClawControl.Models;
 using ZhanClawControl.Services;
+using ZhanClawControl.Views.Dialogs;
 
 namespace ZhanClawControl.ViewModels;
 
-public sealed class AuthorizationChangedEventArgs : EventArgs
-{
-    public AuthorizationChangedEventArgs(bool runtimeVerified) => RuntimeVerified = runtimeVerified;
-    public bool RuntimeVerified { get; }
-}
-
 public sealed class AuthorizationViewModel : ObservableObject
 {
-    private readonly AgentConfigService _config = new();
-    private readonly ScheduledTaskService _task = new();
-    private readonly UiStateService _uiStateService = new();
-    private readonly ControlApiClient _api;
-    private string _newPeerId = "";
-    private string _newNote = "";
-    private AllowedPeerItem? _selected;
-    private bool _pendingRestart;
-    private bool _isBusy;
-    private readonly List<string> _effectivePeerIds = new();
-    private bool _effectiveStateKnown;
-    private bool _hasBackup;
-    private bool _hasUnsavedChanges;
-    private readonly List<string> _persistedPeerIds = new();
+	private readonly AgentConfigService _config = new AgentConfigService();
 
-    public AuthorizationViewModel(ControlApiClient api)
-    {
-        _api = api;
-        AddCommand = new RelayCommand(Add, CanAdd);
-        RemoveCommand = new RelayCommand(Remove, () => !IsBusy && Selected is not null);
-        PasteCommand = new RelayCommand(PasteFromClipboard, () => !IsBusy);
-        SaveCommand = new AsyncRelayCommand(SaveAsync, () => !IsBusy);
-        RevokeAllCommand = new AsyncRelayCommand(RevokeAllAsync, () => !IsBusy && Peers.Count > 0);
-        RestoreBackupCommand = new AsyncRelayCommand(RestoreBackupAsync, () => !IsBusy && HasBackup);
-    }
+	private readonly ScheduledTaskService _task = new ScheduledTaskService();
 
-    private static string L(string key) => App.Localization.Text(key);
-    private static string F(string key, params object?[] values) => App.Localization.Format(key, values);
+	private readonly UiStateService _uiStateService = new UiStateService();
 
-    public ObservableCollection<AllowedPeerItem> Peers { get; } = new();
-    public RelayCommand AddCommand { get; }
-    public RelayCommand RemoveCommand { get; }
-    public RelayCommand PasteCommand { get; }
-    public AsyncRelayCommand SaveCommand { get; }
-    public AsyncRelayCommand RevokeAllCommand { get; }
-    public AsyncRelayCommand RestoreBackupCommand { get; }
+	private readonly ControlApiClient _api;
 
-    public string NewPeerId
-    {
-        get => _newPeerId;
-        set
-        {
-            if (!SetProperty(ref _newPeerId, value)) return;
-            AddCommand.RaiseCanExecuteChanged();
-            OnPropertyChanged(nameof(NewPeerIdHint));
-        }
-    }
-    public string NewNote { get => _newNote; set => SetProperty(ref _newNote, value); }
-    public string NewPeerIdHint => NewPeerId.Trim().Length == 0
-        ? L("AuthorizationPeerIdHintEmpty")
-        : AgentConfigService.IsValidPeerId(NewPeerId.Trim())
-            ? L("AuthorizationPeerIdValid")
-            : L("AuthorizationPeerIdSuspicious");
+	private string _newPeerId = "";
 
-    public AllowedPeerItem? Selected
-    {
-        get => _selected;
-        set { if (SetProperty(ref _selected, value)) RemoveCommand.RaiseCanExecuteChanged(); }
-    }
+	private string _newNote = "";
 
-    public bool PendingRestart
-    {
-        get => _pendingRestart;
-        private set
-        {
-            if (SetProperty(ref _pendingRestart, value))
-                AuthorizationChanged?.Invoke(this, new AuthorizationChangedEventArgs(false));
-        }
-    }
+	private AllowedPeerItem? _selected;
 
-    public bool IsBusy
-    {
-        get => _isBusy;
-        private set
-        {
-            if (!SetProperty(ref _isBusy, value)) return;
-            AddCommand.RaiseCanExecuteChanged();
-            RemoveCommand.RaiseCanExecuteChanged();
-            PasteCommand.RaiseCanExecuteChanged();
-            SaveCommand.RaiseCanExecuteChanged();
-            RevokeAllCommand.RaiseCanExecuteChanged();
-            RestoreBackupCommand.RaiseCanExecuteChanged();
-        }
-    }
+	private bool _pendingRestart;
 
-    public bool HasBackup => _hasBackup;
-    public bool HasUnsavedChanges
-    {
-        get => _hasUnsavedChanges;
-        private set => SetProperty(ref _hasUnsavedChanges, value);
-    }
-    public bool IsEmpty => Peers.Count == 0;
-    public IReadOnlyList<string> EffectivePeerIds => _effectivePeerIds;
-    public IReadOnlyList<string> ConfiguredPeerIds => _persistedPeerIds;
-    public bool EffectiveStateKnown => _effectiveStateKnown;
-    public event EventHandler<AuthorizationChangedEventArgs>? AuthorizationChanged;
+	private bool _isBusy;
 
-    public void Load()
-    {
-        var config = _config.Load();
-        var state = _uiStateService.Load();
-        var notes = state.PeerNotes;
-        _hasBackup = state.LastAllowedPeersBackup.Count > 0;
-        UntrackAllPeers();
-        Peers.Clear();
-        foreach (var peerId in AgentConfigService.GetStringArray(config, "allowed_peers"))
-        {
-            var peer = new AllowedPeerItem
-            {
-                PeerId = peerId,
-                Note = notes.TryGetValue(peerId, out var note) ? note : ""
-            };
-            TrackPeer(peer);
-            Peers.Add(peer);
-        }
-        _persistedPeerIds.Clear();
-        _persistedPeerIds.AddRange(Peers.Select(peer => peer.PeerId));
-        HasUnsavedChanges = false;
-        _effectivePeerIds.Clear();
-        _effectivePeerIds.AddRange(state.EffectiveAllowedPeers);
-        _effectiveStateKnown = state.EffectiveAllowedPeersKnown;
-        var configuredIds = Peers.Select(peer => peer.PeerId).ToHashSet(StringComparer.Ordinal);
-        _pendingRestart = state.AuthorizationPendingRestart ||
-                          (_effectiveStateKnown &&
-                           !configuredIds.SetEquals(_effectivePeerIds));
-        OnPropertyChanged(nameof(PendingRestart));
-        RaiseCollectionDependents();
-        NotifyChanged(false);
-    }
+	private readonly List<string> _effectivePeerIds = new List<string>();
 
-    public async Task RefreshOnlineStateAsync(CancellationToken ct = default)
-    {
-        if (!await ControlApiClient.IsPortOpenAsync(300, ct).ConfigureAwait(true))
-        {
-            foreach (var peer in Peers) peer.Online = false;
-            return;
-        }
-        var connected = await _api.GetPeersAsync(ct).ConfigureAwait(true);
-        var ids = connected.Select(p => p.PeerId).ToHashSet(StringComparer.Ordinal);
-        foreach (var peer in Peers) peer.Online = ids.Contains(peer.PeerId);
-    }
+	private bool _effectiveStateKnown;
 
-    private bool CanAdd()
-    {
-        var value = NewPeerId.Trim();
-        return !IsBusy && AgentConfigService.IsValidPeerId(value) &&
-               Peers.All(p => !string.Equals(p.PeerId, value, StringComparison.Ordinal));
-    }
+	private bool _hasBackup;
 
-    private void Add()
-    {
-        if (!CanAdd()) return;
-        var peer = new AllowedPeerItem { PeerId = NewPeerId.Trim(), Note = NewNote.Trim() };
-        TrackPeer(peer);
-        Peers.Add(peer);
-        NewPeerId = "";
-        NewNote = "";
-        HasUnsavedChanges = true;
-        RaiseCollectionDependents();
-    }
+	private bool _hasUnsavedChanges;
 
-    private void Remove()
-    {
-        if (IsBusy || Selected is null) return;
-        var target = Selected;
-        var label = target.Note.Length > 0 ? $"{target.Note} ({target.ShortPeerId})" : target.ShortPeerId;
-        if (MessageBox.Show(F("DialogRemoveAuthorization", label), L("AuthorizationRemove"),
-                MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
-        target.PropertyChanged -= OnPeerPropertyChanged;
-        Peers.Remove(target);
-        Selected = null;
-        HasUnsavedChanges = true;
-        RaiseCollectionDependents();
-    }
+	private string _loadWarning = "";
 
-    private void PasteFromClipboard()
-    {
-        if (IsBusy) return;
-        try { if (Clipboard.ContainsText()) NewPeerId = Clipboard.GetText().Trim(); }
-        catch { /* Clipboard can be temporarily locked by another process. */ }
-    }
+	private bool _configurationWritable = true;
 
-    private async Task SaveAsync()
-    {
-        IsBusy = true;
-        try
-        {
-            PersistAuthorizationPending();
-            PendingRestart = true;
-            PersistToConfig(Peers.Select(p => p.PeerId).ToList());
-            ReplacePersistedPeerIds(Peers.Select(peer => peer.PeerId));
-            try
-            {
-                PersistNotes();
-                HasUnsavedChanges = false;
-            }
-            catch (Exception ex)
-            {
-                // The security configuration is already committed, but note edits
-                // remain a draft until their separate UI-state write succeeds.
-                HasUnsavedChanges = true;
-                ShowWarning(F("DialogNotesSaveFailed", ex.Message));
-            }
-            if (MessageBox.Show(L("DialogRestartNow"), L("DialogSaved"), MessageBoxButton.OKCancel,
-                    MessageBoxImage.Information) == MessageBoxResult.OK)
-            {
-                var result = await RestartAgentAsync().ConfigureAwait(true);
-                if (result.Success) MarkRuntimeApplied();
-                else ShowWarning(F("DialogRestartFailed", result.Detail));
-            }
-            NotifyChanged(false);
-        }
-        catch (Exception ex) { ShowError(F("DialogSaveFailed", ex.Message)); }
-        finally { IsBusy = false; }
-    }
+	private readonly List<string> _persistedPeerIds = new List<string>();
 
-    private async Task RevokeAllAsync()
-    {
-        if (MessageBox.Show(L("DialogRevokeConfirm"), L("AuthorizationRevokeAll"),
-                MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
-        IsBusy = true;
-        try
-        {
-            var state = _uiStateService.Load();
-            state.LastAllowedPeersBackup = Peers.Select(p => p.PeerId).ToList();
-            foreach (var peer in Peers)
-            {
-                if (peer.Note.Trim().Length > 0) state.PeerNotes[peer.PeerId] = peer.Note.Trim();
-                else state.PeerNotes.Remove(peer.PeerId);
-            }
-            if (!_uiStateService.Save(state, out var backupError))
-            {
-                ShowError(F("DialogBackupFailed", backupError ?? L("CommonUnknown")));
-                return;
-            }
-            _hasBackup = true;
-            OnPropertyChanged(nameof(HasBackup));
-            RestoreBackupCommand.RaiseCanExecuteChanged();
+	public ObservableCollection<AllowedPeerItem> Peers { get; } = new ObservableCollection<AllowedPeerItem>();
 
-            PersistAuthorizationPending();
-            PendingRestart = true;
-            PersistToConfig(Array.Empty<string>());
-            ReplacePersistedPeerIds(Array.Empty<string>());
-            UntrackAllPeers();
-            Peers.Clear();
-            HasUnsavedChanges = false;
-            RaiseCollectionDependents();
-            NotifyChanged(false);
+	public RelayCommand AddCommand { get; }
 
-            var restart = await RestartAgentAsync().ConfigureAwait(true);
-            if (restart.Success)
-            {
-                MarkRuntimeApplied();
-                MessageBox.Show(L("DialogRevokeSuccess"), L("ProductName"), MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
-            else
-            {
-                ShowWarning(F("DialogRevokeFailed", restart.Detail));
-            }
-        }
-        catch (Exception ex) { ShowError(F("DialogOperationFailed", ex.Message)); }
-        finally
-        {
-            IsBusy = false;
-            OnPropertyChanged(nameof(HasBackup));
-            RestoreBackupCommand.RaiseCanExecuteChanged();
-        }
-    }
+	public RelayCommand RemoveCommand { get; }
 
-    private async Task RestoreBackupAsync()
-    {
-        var state = _uiStateService.Load();
-        var backup = state.LastAllowedPeersBackup.Distinct(StringComparer.Ordinal).ToList();
-        if (backup.Count == 0) return;
-        if (backup.Any(id => !AgentConfigService.IsValidPeerId(id)))
-        {
-            ShowError(L("DialogBackupInvalid"));
-            return;
-        }
-        if (MessageBox.Show(F("DialogRestoreConfirm", backup.Count), L("AuthorizationRestore"),
-                MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+	public RelayCommand PasteCommand { get; }
 
-        IsBusy = true;
-        try
-        {
-            PersistAuthorizationPending();
-            PendingRestart = true;
-            PersistToConfig(backup);
-            ReplacePersistedPeerIds(backup);
-            UntrackAllPeers();
-            Peers.Clear();
-            foreach (var peerId in backup)
-            {
-                var peer = new AllowedPeerItem
-                {
-                    PeerId = peerId,
-                    Note = state.PeerNotes.TryGetValue(peerId, out var note) ? note : ""
-                };
-                TrackPeer(peer);
-                Peers.Add(peer);
-            }
-            HasUnsavedChanges = false;
-            RaiseCollectionDependents();
-            NotifyChanged(false);
+	public AsyncRelayCommand SaveCommand { get; }
 
-            var restart = await RestartAgentAsync().ConfigureAwait(true);
-            if (restart.Success) MarkRuntimeApplied();
-            else ShowWarning(F("DialogRestartFailed", restart.Detail));
-        }
-        catch (Exception ex) { ShowError(F("DialogOperationFailed", ex.Message)); }
-        finally { IsBusy = false; }
-    }
+	public AsyncRelayCommand RevokeAllCommand { get; }
 
-    private void PersistToConfig(IReadOnlyList<string> peerIds)
-    {
-        if (peerIds.Any(id => !AgentConfigService.IsValidPeerId(id)))
-            throw new InvalidDataException(L("AuthorizationPeerIdSuspicious"));
-        var config = _config.Load();
-        AgentConfigService.SetStringArray(config, "allowed_peers", peerIds);
-        _config.Save(config);
-    }
+	public AsyncRelayCommand RestoreBackupCommand { get; }
 
-    private void PersistNotes()
-    {
-        var state = _uiStateService.Load();
-        foreach (var peer in Peers)
-        {
-            if (peer.Note.Trim().Length > 0) state.PeerNotes[peer.PeerId] = peer.Note.Trim();
-            else state.PeerNotes.Remove(peer.PeerId);
-        }
-        if (!_uiStateService.Save(state, out var error))
-            throw new IOException(error ?? L("CommonUnknown"));
-    }
+	public string NewPeerId
+	{
+		get
+		{
+			return _newPeerId;
+		}
+		set
+		{
+			if (SetProperty(ref _newPeerId, value, "NewPeerId"))
+			{
+				AddCommand.RaiseCanExecuteChanged();
+				OnPropertyChanged("NewPeerIdHint");
+			}
+		}
+	}
 
-    private void PersistAuthorizationPending()
-    {
-        var state = _uiStateService.Load();
-        state.AuthorizationPendingRestart = true;
-        if (!_uiStateService.Save(state, out var error))
-            throw new IOException(error ?? L("CommonUnknown"));
-    }
+	public string NewNote
+	{
+		get
+		{
+			return _newNote;
+		}
+		set
+		{
+			SetProperty(ref _newNote, value, "NewNote");
+		}
+	}
 
-    private async Task<(bool Success, string Detail)> RestartAgentAsync()
-    {
-        var stop = await _task.StopAsync().ConfigureAwait(true);
-        if (!stop.Success) return (false, stop.CombinedOutput);
-        var start = await _task.StartAsync().ConfigureAwait(true);
-        if (!start.Success) return (false, start.CombinedOutput);
-        var ready = await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(true);
-        return ready ? (true, "") : (false, L("DialogStartTimeout"));
-    }
+	public string NewPeerIdHint
+	{
+		get
+		{
+			if (NewPeerId.Trim().Length != 0)
+			{
+				if (!AgentConfigService.IsValidPeerId(NewPeerId.Trim()))
+				{
+					return L("AuthorizationPeerIdSuspicious");
+				}
+				return L("AuthorizationPeerIdValid");
+			}
+			return L("AuthorizationPeerIdHintEmpty");
+		}
+	}
 
-    public void MarkRuntimeApplied()
-    {
-        // An unrelated verified restart must never promote an in-memory draft to
-        // runtime-effective authorization. Only the last successfully saved list
-        // can have been read by Agent.
-        var effective = _persistedPeerIds.ToList();
-        var state = _uiStateService.Load();
-        state.EffectiveAllowedPeers = effective;
-        state.EffectiveAllowedPeersKnown = true;
-        state.AuthorizationPendingRestart = false;
-        var persisted = _uiStateService.Save(state, out var error);
-        _effectivePeerIds.Clear();
-        _effectivePeerIds.AddRange(effective);
-        _effectiveStateKnown = true;
-        _pendingRestart = false;
-        OnPropertyChanged(nameof(PendingRestart));
-        NotifyChanged(true);
-        if (!persisted)
-            ShowWarning(F("DialogRuntimeStateSaveFailed", error ?? L("CommonUnknown")));
-    }
+	public AllowedPeerItem? Selected
+	{
+		get
+		{
+			return _selected;
+		}
+		set
+		{
+			if (SetProperty(ref _selected, value, "Selected"))
+			{
+				RemoveCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-    public void RefreshLanguage()
-    {
-        OnPropertyChanged(nameof(NewPeerIdHint));
-        foreach (var peer in Peers) peer.RefreshLanguage();
-    }
+	public bool PendingRestart
+	{
+		get
+		{
+			return _pendingRestart;
+		}
+		private set
+		{
+			if (SetProperty(ref _pendingRestart, value, "PendingRestart"))
+			{
+				this.AuthorizationChanged?.Invoke(this, new AuthorizationChangedEventArgs(runtimeVerified: false));
+			}
+		}
+	}
 
-    private void RaiseCollectionDependents()
-    {
-        OnPropertyChanged(nameof(IsEmpty));
-        RevokeAllCommand.RaiseCanExecuteChanged();
-        RestoreBackupCommand.RaiseCanExecuteChanged();
-        OnPropertyChanged(nameof(HasBackup));
-        AddCommand.RaiseCanExecuteChanged();
-    }
+	public bool IsBusy
+	{
+		get
+		{
+			return _isBusy;
+		}
+		private set
+		{
+			if (SetProperty(ref _isBusy, value, "IsBusy"))
+			{
+				RaiseCommandStates();
+			}
+		}
+	}
 
-    private void NotifyChanged(bool runtimeVerified) =>
-        AuthorizationChanged?.Invoke(this, new AuthorizationChangedEventArgs(runtimeVerified));
+	public bool HasBackup => _hasBackup;
 
-    private void ReplacePersistedPeerIds(IEnumerable<string> peerIds)
-    {
-        _persistedPeerIds.Clear();
-        _persistedPeerIds.AddRange(peerIds);
-    }
+	public bool HasUnsavedChanges
+	{
+		get
+		{
+			return _hasUnsavedChanges;
+		}
+		private set
+		{
+			SetProperty(ref _hasUnsavedChanges, value, "HasUnsavedChanges");
+		}
+	}
 
-    private void TrackPeer(AllowedPeerItem peer) => peer.PropertyChanged += OnPeerPropertyChanged;
+	public bool IsEmpty => Peers.Count == 0;
 
-    private void UntrackAllPeers()
-    {
-        foreach (var peer in Peers) peer.PropertyChanged -= OnPeerPropertyChanged;
-    }
+	public string LoadWarning
+	{
+		get
+		{
+			return _loadWarning;
+		}
+		private set
+		{
+			if (SetProperty(ref _loadWarning, value, "LoadWarning"))
+			{
+				OnPropertyChanged("HasLoadWarning");
+			}
+		}
+	}
 
-    private void OnPeerPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(AllowedPeerItem.Note)) HasUnsavedChanges = true;
-    }
+	public bool HasLoadWarning => LoadWarning.Length > 0;
 
-    private static void ShowError(string text) => MessageBox.Show(text, L("ProductName"), MessageBoxButton.OK, MessageBoxImage.Error);
-    private static void ShowWarning(string text) => MessageBox.Show(text, L("ProductName"), MessageBoxButton.OK, MessageBoxImage.Warning);
+	public bool ConfigurationWritable
+	{
+		get
+		{
+			return _configurationWritable;
+		}
+		private set
+		{
+			if (SetProperty(ref _configurationWritable, value, "ConfigurationWritable"))
+			{
+				RaiseCommandStates();
+			}
+		}
+	}
+
+	public IReadOnlyList<string> EffectivePeerIds => _effectivePeerIds;
+
+	public IReadOnlyList<string> ConfiguredPeerIds => _persistedPeerIds;
+
+	public bool EffectiveStateKnown => _effectiveStateKnown;
+
+	public event EventHandler<AuthorizationChangedEventArgs>? AuthorizationChanged;
+
+	public AuthorizationViewModel(ControlApiClient api)
+	{
+		_api = api;
+		AddCommand = new RelayCommand(Add, CanAdd);
+		RemoveCommand = new RelayCommand(Remove, () => ConfigurationWritable && !IsBusy && Selected != null);
+		PasteCommand = new RelayCommand(PasteFromClipboard, () => ConfigurationWritable && !IsBusy);
+		SaveCommand = new AsyncRelayCommand(SaveAsync, () => ConfigurationWritable && !IsBusy);
+		RevokeAllCommand = new AsyncRelayCommand(RevokeAllAsync, () => ConfigurationWritable && !IsBusy && Peers.Count > 0);
+		RestoreBackupCommand = new AsyncRelayCommand(RestoreBackupAsync, () => ConfigurationWritable && !IsBusy && HasBackup);
+	}
+
+	private static string L(string key)
+	{
+		return App.Localization.Text(key);
+	}
+
+	private static string F(string key, params object?[] values)
+	{
+		return App.Localization.Format(key, values);
+	}
+
+	public bool TryLoad(out string? error)
+	{
+		JsonObject config;
+		try
+		{
+			config = _config.Load();
+			AgentConfigService.ValidateRuntimeBoundary(config);
+			LoadWarning = "";
+			ConfigurationWritable = true;
+			error = null;
+		}
+		catch (Exception ex)
+		{
+			config = AgentConfigService.CreateDefault();
+			LoadWarning = F("AuthorizationConfigLoadFailed", ex.Message);
+			ConfigurationWritable = false;
+			error = ex.Message;
+		}
+		UiState uiState = _uiStateService.Load();
+		Dictionary<string, string> peerNotes = uiState.PeerNotes;
+		_hasBackup = uiState.LastAllowedPeersBackup.Count > 0;
+		UntrackAllPeers();
+		Peers.Clear();
+		foreach (string item in AgentConfigService.GetStringArray(config, "allowed_peers"))
+		{
+			string value;
+			AllowedPeerItem allowedPeerItem = new AllowedPeerItem
+			{
+				PeerId = item,
+				Note = (peerNotes.TryGetValue(item, out value) ? value : "")
+			};
+			TrackPeer(allowedPeerItem);
+			Peers.Add(allowedPeerItem);
+		}
+		_persistedPeerIds.Clear();
+		_persistedPeerIds.AddRange(Peers.Select((AllowedPeerItem peer) => peer.PeerId));
+		HasUnsavedChanges = false;
+		_effectivePeerIds.Clear();
+		_effectivePeerIds.AddRange(uiState.EffectiveAllowedPeers);
+		_effectiveStateKnown = uiState.EffectiveAllowedPeersKnown;
+		HashSet<string> hashSet = Peers.Select((AllowedPeerItem peer) => peer.PeerId).ToHashSet<string>(StringComparer.Ordinal);
+		_pendingRestart = uiState.AuthorizationPendingRestart || (_effectiveStateKnown && !hashSet.SetEquals(_effectivePeerIds));
+		OnPropertyChanged("PendingRestart");
+		RaiseCollectionDependents();
+		NotifyChanged(runtimeVerified: false);
+		return error == null;
+	}
+
+	public async Task RefreshOnlineStateAsync(CancellationToken ct = default(CancellationToken))
+	{
+		if (!ScheduledTaskService.IsAgentProcessRunning())
+		{
+			foreach (AllowedPeerItem peer in Peers)
+			{
+				peer.Online = false;
+			}
+			return;
+		}
+		if (!(await ControlApiClient.IsPortOpenAsync(300, ct).ConfigureAwait(continueOnCapturedContext: true)))
+		{
+			foreach (AllowedPeerItem peer2 in Peers)
+			{
+				peer2.Online = null;
+			}
+			return;
+		}
+		PeerQueryResult peerQueryResult = await _api.GetPeersResultAsync(ct).ConfigureAwait(continueOnCapturedContext: true);
+		if (!peerQueryResult.Success)
+		{
+			foreach (AllowedPeerItem peer3 in Peers)
+			{
+				peer3.Online = null;
+			}
+			return;
+		}
+		HashSet<string> hashSet = peerQueryResult.Peers.Select((PeerEntry p) => p.PeerId).ToHashSet<string>(StringComparer.Ordinal);
+		foreach (AllowedPeerItem peer4 in Peers)
+		{
+			peer4.Online = hashSet.Contains(peer4.PeerId);
+		}
+	}
+
+	private bool CanAdd()
+	{
+		string value = NewPeerId.Trim();
+		if (ConfigurationWritable && !IsBusy && AgentConfigService.IsValidPeerId(value))
+		{
+			return Peers.All((AllowedPeerItem p) => !string.Equals(p.PeerId, value, StringComparison.Ordinal));
+		}
+		return false;
+	}
+
+	private void Add()
+	{
+		if (CanAdd())
+		{
+			AllowedPeerItem allowedPeerItem = new AllowedPeerItem
+			{
+				PeerId = NewPeerId.Trim(),
+				Note = NewNote.Trim()
+			};
+			TrackPeer(allowedPeerItem);
+			Peers.Add(allowedPeerItem);
+			NewPeerId = "";
+			NewNote = "";
+			HasUnsavedChanges = true;
+			RaiseCollectionDependents();
+		}
+	}
+
+	private void Remove()
+	{
+		if (!IsBusy && Selected != null)
+		{
+			AllowedPeerItem selected = Selected;
+			string text = ((selected.Note.Length > 0) ? (selected.Note + " (" + selected.ShortPeerId + ")") : selected.ShortPeerId);
+			if (!(AppDialog.ShowActionsFormat("DialogRemoveAuthorization", new object[1] { text }, "AuthorizationRemove", new _003C_003Ez__ReadOnlyArray<AppDialogAction>(new AppDialogAction[2]
+			{
+				new AppDialogAction("Remove", "DialogActionRemove", AppDialogActionStyle.Danger),
+				new AppDialogAction("Cancel", "CommonCancel", AppDialogActionStyle.Secondary, IsDefault: true, IsCancel: true)
+			}), (MessageBoxImage)48) != "Remove"))
+			{
+				selected.PropertyChanged -= OnPeerPropertyChanged;
+				Peers.Remove(selected);
+				Selected = null;
+				HasUnsavedChanges = true;
+				RaiseCollectionDependents();
+			}
+		}
+	}
+
+	private void PasteFromClipboard()
+	{
+		if (IsBusy)
+		{
+			return;
+		}
+		try
+		{
+			if (Clipboard.ContainsText())
+			{
+				NewPeerId = Clipboard.GetText().Trim();
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private async Task SaveAsync()
+	{
+		IsBusy = true;
+		try
+		{
+			PersistAuthorizationPending();
+			PendingRestart = true;
+			PersistToConfig(Peers.Select((AllowedPeerItem p) => p.PeerId).ToList());
+			ReplacePersistedPeerIds(Peers.Select((AllowedPeerItem peer) => peer.PeerId));
+			try
+			{
+				PersistNotes();
+				HasUnsavedChanges = false;
+			}
+			catch (Exception ex)
+			{
+				HasUnsavedChanges = true;
+				ShowWarning(F("DialogNotesSaveFailed", ex.Message));
+			}
+			if (AppDialog.ShowActions("DialogRestartNow", "DialogSaved", new _003C_003Ez__ReadOnlyArray<AppDialogAction>(new AppDialogAction[2]
+			{
+				new AppDialogAction("RestartNow", "DialogActionRestartNow", AppDialogActionStyle.Primary),
+				new AppDialogAction("Later", "DialogActionLater", AppDialogActionStyle.Secondary, IsDefault: true, IsCancel: true)
+			}), (MessageBoxImage)64) == "RestartNow")
+			{
+				(bool, string) tuple = await RestartAgentAsync().ConfigureAwait(continueOnCapturedContext: true);
+				if (tuple.Item1)
+				{
+					MarkRuntimeApplied();
+				}
+				else
+				{
+					ShowWarning(F("DialogRestartFailed", tuple.Item2));
+				}
+			}
+			NotifyChanged(runtimeVerified: false);
+		}
+		catch (Exception ex2)
+		{
+			ShowError(F("DialogSaveFailed", ex2.Message));
+		}
+		finally
+		{
+			IsBusy = false;
+		}
+	}
+
+	private async Task RevokeAllAsync()
+	{
+		if (AppDialog.ShowActions("DialogRevokeConfirm", "AuthorizationRevokeAll", new _003C_003Ez__ReadOnlyArray<AppDialogAction>(new AppDialogAction[2]
+		{
+			new AppDialogAction("RevokeAll", "DialogActionRevokeAll", AppDialogActionStyle.Danger),
+			new AppDialogAction("Cancel", "CommonCancel", AppDialogActionStyle.Secondary, IsDefault: true, IsCancel: true)
+		}), (MessageBoxImage)48) != "RevokeAll")
+		{
+			return;
+		}
+		IsBusy = true;
+		try
+		{
+			UiState uiState = _uiStateService.Load();
+			uiState.LastAllowedPeersBackup = Peers.Select((AllowedPeerItem p) => p.PeerId).ToList();
+			foreach (AllowedPeerItem peer in Peers)
+			{
+				if (peer.Note.Trim().Length > 0)
+				{
+					uiState.PeerNotes[peer.PeerId] = peer.Note.Trim();
+				}
+				else
+				{
+					uiState.PeerNotes.Remove(peer.PeerId);
+				}
+			}
+			if (!_uiStateService.Save(uiState, out string error))
+			{
+				ShowError(F("DialogBackupFailed", error ?? L("CommonUnknown")));
+				return;
+			}
+			_hasBackup = true;
+			OnPropertyChanged("HasBackup");
+			RestoreBackupCommand.RaiseCanExecuteChanged();
+			PersistAuthorizationPending();
+			PendingRestart = true;
+			PersistToConfig(Array.Empty<string>());
+			ReplacePersistedPeerIds(Array.Empty<string>());
+			UntrackAllPeers();
+			Peers.Clear();
+			HasUnsavedChanges = false;
+			RaiseCollectionDependents();
+			NotifyChanged(runtimeVerified: false);
+			(bool, string) tuple = await RestartAgentAsync().ConfigureAwait(continueOnCapturedContext: true);
+			if (tuple.Item1)
+			{
+				MarkRuntimeApplied();
+				AppDialog.Show(L("DialogRevokeSuccess"), L("ProductName"), (MessageBoxButton)0, (MessageBoxImage)64);
+			}
+			else
+			{
+				ShowWarning(F("DialogRevokeFailed", tuple.Item2));
+			}
+		}
+		catch (Exception ex)
+		{
+			ShowError(F("DialogOperationFailed", ex.Message));
+		}
+		finally
+		{
+			IsBusy = false;
+			OnPropertyChanged("HasBackup");
+			RestoreBackupCommand.RaiseCanExecuteChanged();
+		}
+	}
+
+	private async Task RestoreBackupAsync()
+	{
+		UiState uiState = _uiStateService.Load();
+		List<string> list = uiState.LastAllowedPeersBackup.Distinct<string>(StringComparer.Ordinal).ToList();
+		if (list.Count == 0)
+		{
+			return;
+		}
+		if (list.Any((string id) => !AgentConfigService.IsValidPeerId(id)))
+		{
+			ShowError(L("DialogBackupInvalid"));
+		}
+		else
+		{
+			if (AppDialog.ShowActionsFormat("DialogRestoreConfirm", new object[1] { list.Count }, "AuthorizationRestore", new _003C_003Ez__ReadOnlyArray<AppDialogAction>(new AppDialogAction[2]
+			{
+				new AppDialogAction("RestoreRestart", "DialogActionRestoreRestart", AppDialogActionStyle.Primary),
+				new AppDialogAction("Cancel", "CommonCancel", AppDialogActionStyle.Secondary, IsDefault: true, IsCancel: true)
+			}), (MessageBoxImage)32) != "RestoreRestart")
+			{
+				return;
+			}
+			IsBusy = true;
+			try
+			{
+				PersistAuthorizationPending();
+				PendingRestart = true;
+				PersistToConfig(list);
+				ReplacePersistedPeerIds(list);
+				UntrackAllPeers();
+				Peers.Clear();
+				foreach (string item in list)
+				{
+					string value;
+					AllowedPeerItem allowedPeerItem = new AllowedPeerItem
+					{
+						PeerId = item,
+						Note = (uiState.PeerNotes.TryGetValue(item, out value) ? value : "")
+					};
+					TrackPeer(allowedPeerItem);
+					Peers.Add(allowedPeerItem);
+				}
+				HasUnsavedChanges = false;
+				RaiseCollectionDependents();
+				NotifyChanged(runtimeVerified: false);
+				(bool, string) tuple = await RestartAgentAsync().ConfigureAwait(continueOnCapturedContext: true);
+				if (tuple.Item1)
+				{
+					MarkRuntimeApplied();
+					return;
+				}
+				ShowWarning(F("DialogRestartFailed", tuple.Item2));
+			}
+			catch (Exception ex)
+			{
+				ShowError(F("DialogOperationFailed", ex.Message));
+			}
+			finally
+			{
+				IsBusy = false;
+			}
+		}
+	}
+
+	private void PersistToConfig(IReadOnlyList<string> peerIds)
+	{
+		if (peerIds.Any((string id) => !AgentConfigService.IsValidPeerId(id)))
+		{
+			throw new InvalidDataException(L("AuthorizationPeerIdSuspicious"));
+		}
+		JsonObject config = _config.Load();
+		AgentConfigService.SetStringArray(config, "allowed_peers", peerIds);
+		_config.Save(config);
+	}
+
+	private void PersistNotes()
+	{
+		UiState uiState = _uiStateService.Load();
+		foreach (AllowedPeerItem peer in Peers)
+		{
+			if (peer.Note.Trim().Length > 0)
+			{
+				uiState.PeerNotes[peer.PeerId] = peer.Note.Trim();
+			}
+			else
+			{
+				uiState.PeerNotes.Remove(peer.PeerId);
+			}
+		}
+		if (!_uiStateService.Save(uiState, out string error))
+		{
+			throw new IOException(error ?? L("CommonUnknown"));
+		}
+	}
+
+	private void PersistAuthorizationPending()
+	{
+		UiState uiState = _uiStateService.Load();
+		uiState.AuthorizationPendingRestart = true;
+		if (!_uiStateService.Save(uiState, out string error))
+		{
+			throw new IOException(error ?? L("CommonUnknown"));
+		}
+	}
+
+	private async Task<(bool Success, string Detail)> RestartAgentAsync()
+	{
+		ProcessResult processResult = await _task.StopAsync().ConfigureAwait(continueOnCapturedContext: true);
+		if (!processResult.Success)
+		{
+			return (Success: false, Detail: processResult.CombinedOutput);
+		}
+		ProcessResult processResult2 = await _task.StartAsync().ConfigureAwait(continueOnCapturedContext: true);
+		if (!processResult2.Success)
+		{
+			return (Success: false, Detail: processResult2.CombinedOutput);
+		}
+		return (await InstallerService.WaitForReadyAsync(TimeSpan.FromSeconds(45.0)).ConfigureAwait(continueOnCapturedContext: true)) ? (Success: true, Detail: "") : (Success: false, Detail: L("DialogStartTimeout"));
+	}
+
+	public void MarkRuntimeApplied()
+	{
+		List<string> list = _persistedPeerIds.ToList();
+		UiState uiState = _uiStateService.Load();
+		uiState.EffectiveAllowedPeers = list;
+		uiState.EffectiveAllowedPeersKnown = true;
+		uiState.AuthorizationPendingRestart = false;
+		string error;
+		bool num = _uiStateService.Save(uiState, out error);
+		_effectivePeerIds.Clear();
+		_effectivePeerIds.AddRange(list);
+		_effectiveStateKnown = true;
+		_pendingRestart = false;
+		OnPropertyChanged("PendingRestart");
+		NotifyChanged(runtimeVerified: true);
+		if (!num)
+		{
+			ShowWarning(F("DialogRuntimeStateSaveFailed", error ?? L("CommonUnknown")));
+		}
+	}
+
+	public void RefreshLanguage()
+	{
+		OnPropertyChanged("NewPeerIdHint");
+		foreach (AllowedPeerItem peer in Peers)
+		{
+			peer.RefreshLanguage();
+		}
+	}
+
+	private void RaiseCollectionDependents()
+	{
+		OnPropertyChanged("IsEmpty");
+		RevokeAllCommand.RaiseCanExecuteChanged();
+		RestoreBackupCommand.RaiseCanExecuteChanged();
+		OnPropertyChanged("HasBackup");
+		AddCommand.RaiseCanExecuteChanged();
+	}
+
+	private void RaiseCommandStates()
+	{
+		AddCommand.RaiseCanExecuteChanged();
+		RemoveCommand.RaiseCanExecuteChanged();
+		PasteCommand.RaiseCanExecuteChanged();
+		SaveCommand.RaiseCanExecuteChanged();
+		RevokeAllCommand.RaiseCanExecuteChanged();
+		RestoreBackupCommand.RaiseCanExecuteChanged();
+	}
+
+	private void NotifyChanged(bool runtimeVerified)
+	{
+		this.AuthorizationChanged?.Invoke(this, new AuthorizationChangedEventArgs(runtimeVerified));
+	}
+
+	private void ReplacePersistedPeerIds(IEnumerable<string> peerIds)
+	{
+		_persistedPeerIds.Clear();
+		_persistedPeerIds.AddRange(peerIds);
+	}
+
+	private void TrackPeer(AllowedPeerItem peer)
+	{
+		peer.PropertyChanged += OnPeerPropertyChanged;
+	}
+
+	private void UntrackAllPeers()
+	{
+		foreach (AllowedPeerItem peer in Peers)
+		{
+			peer.PropertyChanged -= OnPeerPropertyChanged;
+		}
+	}
+
+	private void OnPeerPropertyChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		if (e.PropertyName == "Note")
+		{
+			HasUnsavedChanges = true;
+		}
+	}
+
+	private static void ShowError(string text)
+	{
+		//IL_000e: Unknown result type (might be due to invalid IL or missing references)
+		AppDialog.Show(text, L("ProductName"), (MessageBoxButton)0, (MessageBoxImage)16);
+	}
+
+	private static void ShowWarning(string text)
+	{
+		//IL_000e: Unknown result type (might be due to invalid IL or missing references)
+		AppDialog.Show(text, L("ProductName"), (MessageBoxButton)0, (MessageBoxImage)48);
+	}
 }

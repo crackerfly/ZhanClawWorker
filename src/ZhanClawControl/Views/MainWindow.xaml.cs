@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using ZhanClawControl.Services;
 using ZhanClawControl.ViewModels;
+using ZhanClawControl.Views.Dialogs;
 
 // WinForms 与 System.Drawing 只在托盘图标处使用。
 // 用命名空间别名而不是 using 指令引入，避免 UserControl / Application / MessageBox 等
@@ -13,11 +14,19 @@ namespace ZhanClawControl.Views;
 
 public partial class MainWindow : Window
 {
+    // 与 Themes/Controls.xaml 的 AppFontFamily 保持一致
+    private const string TrayFontFamily = "Microsoft YaHei UI";
+
     private readonly MainViewModel _viewModel = new();
     private readonly UiStateService _uiState = new();
     private WinForms.NotifyIcon? _trayIcon;
+    private WinForms.ContextMenuStrip? _trayMenu;
     private WinForms.ToolStripMenuItem? _openTrayItem;
     private WinForms.ToolStripMenuItem? _exitTrayItem;
+
+    // 通知区菜单是 WinForms 控件，不参与 WPF 资源继承，
+    // 因此在这里显式使用与应用其余部分相同的 Microsoft YaHei UI。
+    private Drawing.Font? _trayFont;
 
     // 用户确认退出程序（而非最小化到托盘）
     private bool _reallyExit;
@@ -36,6 +45,7 @@ public partial class MainWindow : Window
 
         _viewModel.Settings.UninstallCompleted += OnUninstallCompleted;
         App.Localization.LanguageChanged += OnLanguageChanged;
+        App.Theme.ThemeChanged += OnThemeChanged;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -70,32 +80,32 @@ public partial class MainWindow : Window
                 Text = App.Localization.Text("ProductName")
             };
 
-            var menu = new WinForms.ContextMenuStrip();
+            _trayMenu = new WinForms.ContextMenuStrip();
+            ApplyTrayMenuTheme();
+            ApplyTrayMenuFont();
 
             _openTrayItem = new WinForms.ToolStripMenuItem(App.Localization.Text("CommonOpenMain"));
             _openTrayItem.Click += (_, _) => RestoreWindow();
-            menu.Items.Add(_openTrayItem);
+            _trayMenu.Items.Add(_openTrayItem);
 
-            menu.Items.Add(new WinForms.ToolStripSeparator());
+            _trayMenu.Items.Add(new WinForms.ToolStripSeparator());
 
             _exitTrayItem = new WinForms.ToolStripMenuItem(App.Localization.Text("CommonExitApp"));
             _exitTrayItem.Click += (_, _) =>
             {
-                var confirm = MessageBox.Show(
-                    App.Localization.Text("TrayExitConfirm"),
-                    App.Localization.Text("DialogExit"),
-                    MessageBoxButton.OKCancel,
-                    MessageBoxImage.Question);
-
-                if (confirm == MessageBoxResult.OK && ConfirmDiscardAuthorizationDraft())
+                RestoreWindow();
+                if (ConfirmApplicationExit())
                 {
                     _reallyExit = true;
                     RequestShutdown();
                 }
             };
-            menu.Items.Add(_exitTrayItem);
+            _trayMenu.Items.Add(_exitTrayItem);
 
-            _trayIcon.ContextMenuStrip = menu;
+            ApplyTrayMenuTheme();
+            ApplyTrayMenuFont();
+
+            _trayIcon.ContextMenuStrip = _trayMenu;
             _trayIcon.DoubleClick += (_, _) => RestoreWindow();
         }
         catch
@@ -157,7 +167,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!ConfirmDiscardAuthorizationDraft())
+        if (!ConfirmApplicationExit())
         {
             e.Cancel = true;
             return;
@@ -170,15 +180,21 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         App.Localization.LanguageChanged -= OnLanguageChanged;
+        App.Theme.ThemeChanged -= OnThemeChanged;
         _viewModel.Settings.UninstallCompleted -= OnUninstallCompleted;
         _viewModel.Dispose();
 
         if (_trayIcon is not null)
         {
             _trayIcon.Visible = false;
+            _trayIcon.ContextMenuStrip = null;
             _trayIcon.Dispose();
             _trayIcon = null;
         }
+        _trayMenu?.Dispose();
+        _trayMenu = null;
+        _trayFont?.Dispose();
+        _trayFont = null;
 
         RequestShutdown();
     }
@@ -187,8 +203,65 @@ public partial class MainWindow : Window
     {
         if (_openTrayItem is not null) _openTrayItem.Text = App.Localization.Text("CommonOpenMain");
         if (_exitTrayItem is not null) _exitTrayItem.Text = App.Localization.Text("CommonExitApp");
-        if (_trayIcon is not null) _trayIcon.Text = App.Localization.Text("ShortName")[..Math.Min(62, App.Localization.Text("ShortName").Length)];
         UpdateTrayText();
+    }
+
+    private void OnThemeChanged(object? sender, EventArgs e)
+    {
+        ApplyTrayMenuTheme();
+        ApplyTrayMenuFont();
+    }
+
+    private void ApplyTrayMenuTheme()
+    {
+        if (_trayMenu is null)
+        {
+            return;
+        }
+
+        var dark = App.Theme.CurrentTheme == AppTheme.Dark;
+        _trayMenu.RenderMode = WinForms.ToolStripRenderMode.System;
+        _trayMenu.BackColor = dark
+            ? Drawing.Color.FromArgb(43, 43, 43)
+            : Drawing.Color.FromArgb(255, 255, 255);
+        _trayMenu.ForeColor = dark
+            ? Drawing.Color.White
+            : Drawing.Color.FromArgb(27, 27, 27);
+        foreach (WinForms.ToolStripItem item in _trayMenu.Items)
+        {
+            item.BackColor = _trayMenu.BackColor;
+            item.ForeColor = _trayMenu.ForeColor;
+        }
+        _trayMenu.Invalidate();
+    }
+
+    private void ApplyTrayMenuFont()
+    {
+        if (_trayMenu is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // 菜单字号沿用系统菜单磅值，只替换字族；字体缺失时保留系统默认。
+            var size = WinForms.SystemFonts.MenuFont?.SizeInPoints ?? 9f;
+            _trayFont ??= new Drawing.Font(TrayFontFamily, size);
+            if (!string.Equals(_trayFont.Name, TrayFontFamily, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _trayMenu.Font = _trayFont;
+            foreach (WinForms.ToolStripItem item in _trayMenu.Items)
+            {
+                item.Font = _trayFont;
+            }
+        }
+        catch
+        {
+            // 字体不可用时保持系统默认菜单字体，不影响托盘功能。
+        }
     }
 
     private void OnUninstallCompleted(object? sender, EventArgs e)
@@ -197,13 +270,22 @@ public partial class MainWindow : Window
         RequestShutdown();
     }
 
-    private bool ConfirmDiscardAuthorizationDraft()
+    private bool ConfirmApplicationExit()
     {
-        if (!_viewModel.HasUnsavedAuthorizationChanges) return true;
-        return MessageBox.Show(
-                   App.Localization.Text("DialogUnsavedAuthorizationExit"),
-                   App.Localization.Text("DialogExit"),
-                   MessageBoxButton.OKCancel,
-                   MessageBoxImage.Warning) == MessageBoxResult.OK;
+        return AppDialog.ShowActions(
+                   _viewModel.HasUnsavedAuthorizationChanges
+                       ? "DialogUnsavedAuthorizationAndAgentExit"
+                       : "TrayExitConfirm",
+                   "DialogExit",
+                   [
+                       new("exit", _viewModel.HasUnsavedAuthorizationChanges
+                           ? "DialogActionDiscardExit"
+                           : "DialogActionExit", AppDialogActionStyle.Danger),
+                       new("cancel", "CommonCancel", IsDefault: true, IsCancel: true)
+                   ],
+                   _viewModel.HasUnsavedAuthorizationChanges
+                       ? MessageBoxImage.Warning
+                       : MessageBoxImage.Question,
+                   this) == "exit";
     }
 }

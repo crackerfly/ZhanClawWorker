@@ -1,440 +1,660 @@
+#nullable disable warnings
+#pragma warning disable CS0649
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ZhanClawControl.Services;
 
-public sealed record AgentInfo(
-    string PeerId,
-    string Version,
-    string AgentName,
-    string RelayPeerId,
-    bool? ReservationReady,
-    bool? MdnsReady,
-    int? ConnectedRemoteCount,
-    int? RunningTasks,
-    int? AvailableTaskSlots,
-    IReadOnlyList<string> ListenAddresses,
-    string RawJson);
-
-public sealed record PeerEntry(
-    string PeerId,
-    string Name,
-    string ConnectionPath,
-    string Scope)
-{
-    public string ShortPeerId =>
-        PeerId.Length > 14 ? $"{PeerId[..6]}…{PeerId[^6..]}" : PeerId;
-}
-
-/// <summary>
-/// 只访问回环 Control API 的两个只读端点。被控端不需要四个 Primitive。
-///
-    /// 注意：附件没有 Agent API 的版本化 schema 源文件，因此这里对已观察到的字段名
-    /// 和兼容候选做容错探测，并保留原始 JSON 供显式完整诊断使用。
-/// 若后续 Agent 版本变更字段名，只需在 PickString 的候选列表里补一项。
-/// </summary>
 public sealed class ControlApiClient : IDisposable
 {
-    private static readonly JsonSerializerOptions PrettyOptions = new()
-    {
-        WriteIndented = true,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
-    };
+	private enum TcpTableClass
+	{
+		OwnerPidListener = 3,
+		OwnerPidAll = 5
+	}
 
-    private readonly HttpClient _http;
+	private struct MibTcpRowOwnerPid
+	{
+		public uint State;
 
-    public ControlApiClient()
-    {
-        _http = new HttpClient
-        {
-            BaseAddress = new Uri(AppPaths.ApiBaseUrl),
-            Timeout = TimeSpan.FromSeconds(10)
-        };
-    }
+		public uint LocalAddress;
 
-    /// <summary>
-    /// TCP 层异步探测，比 HTTP 请求快，用于频繁的存活轮询。
-    /// 调用方取消会向上传播；只有探测自身超时或连接失败时返回 false。
-    /// </summary>
-    public static async Task<bool> IsPortOpenAsync(
-        int timeoutMs = 500,
-        CancellationToken ct = default)
-    {
-        ct.ThrowIfCancellationRequested();
+		public uint LocalPort;
 
-        using var client = new TcpClient();
-        using var timeoutCts = new CancellationTokenSource();
-        if (timeoutMs != Timeout.Infinite)
-        {
-            timeoutCts.CancelAfter(timeoutMs);
-        }
+		public uint RemoteAddress;
 
-        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-        try
-        {
-            await client
-                .ConnectAsync(AppPaths.ApiHost, AppPaths.ApiPort, connectCts.Token)
-                .ConfigureAwait(false);
-            return true;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-        catch (SocketException)
-        {
-            return false;
-        }
-    }
+		public uint RemotePort;
 
-    /// <summary>
-    /// 同步兼容入口。新异步调用方应使用 <see cref="IsPortOpenAsync"/>，避免阻塞 UI 线程。
-    /// </summary>
-    public static bool IsPortOpen(int timeoutMs = 500)
-    {
-        try
-        {
-            return IsPortOpenAsync(timeoutMs).GetAwaiter().GetResult();
-        }
-        catch
-        {
-            return false;
-        }
-    }
+		public uint OwningPid;
+	}
 
-    private static string? ReadToken()
-    {
-        try
-        {
-            if (!File.Exists(AppPaths.ApiTokenFile))
-            {
-                return null;
-            }
+	private const int MaxResponseBytes = 16777216;
 
-            var token = File.ReadAllText(AppPaths.ApiTokenFile, Encoding.UTF8).Trim();
-            return string.IsNullOrWhiteSpace(token) ? null : token;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+	private const int MaxApiTokenBytes = 65536;
 
-    private async Task<string?> GetAsync(string path, CancellationToken ct)
-    {
-        var token = ReadToken();
-        if (token is null)
-        {
-            return null;
-        }
+	private const int AfInet = 2;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, path);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+	private const uint TcpStateListen = 2u;
 
-        using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
+	private const uint TcpStateEstablished = 5u;
 
-        return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-    }
+	private const uint ErrorInsufficientBuffer = 122u;
 
-    public async Task<AgentInfo?> GetInfoAsync(CancellationToken ct = default)
-    {
-        try
-        {
-            var json = await GetAsync("/v1/info", ct).ConfigureAwait(false);
-            if (json is null)
-            {
-                return null;
-            }
+	private const uint NoError = 0u;
 
-            using var doc = JsonDocument.Parse(json);
-            var root = Unwrap(doc.RootElement);
+	private static readonly HttpRequestOptionsKey<int> ExpectedApiProcessId = new HttpRequestOptionsKey<int>("ZhanClawControl.ExpectedApiProcessId");
 
-            // 字段名取自 p2p-agent.exe 内嵌的 json 结构体标签，非猜测
-            var peerId = PickString(root, "peer_id", "peerId", "id");
-            var version = PickString(root, "version");
-            var agentName = PickString(root, "agent_name", "name");
-            var relayPeerId = PickString(root, "relay_peer_id");
+	private static readonly JsonSerializerOptions PrettyOptions = new JsonSerializerOptions
+	{
+		WriteIndented = true,
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+	};
 
-            return new AgentInfo(
-                peerId ?? "",
-                version ?? "",
-                agentName ?? "",
-                relayPeerId ?? "",
-                PickBool(root, "reservation_ready"),
-                PickBool(root, "mdns_ready"),
-                PickInt(root, "connected_remote_count"),
-                PickInt(root, "running_tasks"),
-                PickInt(root, "available_task_slots"),
-                PickStringArray(root, "listen_addresses", "addresses", "addrs"),
-                Prettify(json));
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+	private readonly HttpClient _http;
 
-    /// <summary>取 /v1/peers 的原始响应，供诊断使用（解析失败时才能定位字段名）。</summary>
-    public async Task<string?> GetPeersRawAsync(CancellationToken ct = default)
-    {
-        try
-        {
-            var json = await GetAsync("/v1/peers", ct).ConfigureAwait(false);
-            return json is null ? null : Prettify(json);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+	public ControlApiClient()
+	{
+		SocketsHttpHandler handler = new SocketsHttpHandler
+		{
+			UseProxy = false,
+			AllowAutoRedirect = false,
+			UseCookies = false,
+			AutomaticDecompression = DecompressionMethods.None,
+			PooledConnectionLifetime = TimeSpan.Zero,
+			PooledConnectionIdleTimeout = TimeSpan.Zero,
+			ConnectCallback = ConnectTrustedApiAsync
+		};
+		_http = new HttpClient(handler, disposeHandler: true)
+		{
+			BaseAddress = new Uri(AppPaths.ApiBaseUrl),
+			Timeout = TimeSpan.FromSeconds(10.0),
+			DefaultRequestVersion = HttpVersion.Version11,
+			DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact
+		};
+	}
 
-    public async Task<IReadOnlyList<PeerEntry>> GetPeersAsync(CancellationToken ct = default)
-    {
-        var result = new List<PeerEntry>();
+	public static async Task<bool> IsPortOpenAsync(int timeoutMs = 500, CancellationToken ct = default(CancellationToken))
+	{
+		ct.ThrowIfCancellationRequested();
+		using TcpClient client = new TcpClient();
+		using CancellationTokenSource timeoutCts = new CancellationTokenSource();
+		if (timeoutMs != -1)
+		{
+			timeoutCts.CancelAfter(timeoutMs);
+		}
+		using CancellationTokenSource connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+		try
+		{
+			await client.ConnectAsync("127.0.0.1", 7432, connectCts.Token).ConfigureAwait(continueOnCapturedContext: false);
+			return true;
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (OperationCanceledException)
+		{
+			return false;
+		}
+		catch (SocketException)
+		{
+			return false;
+		}
+	}
 
-        try
-        {
-            var json = await GetAsync("/v1/peers", ct).ConfigureAwait(false);
-            if (json is null)
-            {
-                return result;
-            }
+	private static string? ReadToken()
+	{
+		try
+		{
+			string text = RuntimeSecurityService.ReadProtectedRuntimeTextFile(AppPaths.ApiTokenFile, Encoding.UTF8, 65536).Trim();
+			return string.IsNullOrWhiteSpace(text) ? null : text;
+		}
+		catch
+		{
+			return null;
+		}
+	}
 
-            using var doc = JsonDocument.Parse(json);
-            var array = FindArray(doc.RootElement, "peers", "nodes", "providers");
-            if (array is null)
-            {
-                return result;
-            }
+	private async Task<string?> GetAsync(string path, CancellationToken ct)
+	{
+		int? num = TryGetTrustedApiListenerPid();
+		if (!num.HasValue)
+		{
+			return null;
+		}
+		string text = ReadToken();
+		if (text == null)
+		{
+			return null;
+		}
+		if (TryGetTrustedApiListenerPid() != num)
+		{
+			return null;
+		}
+		using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, path);
+		request.Options.Set(ExpectedApiProcessId, num.Value);
+		request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", text);
+		request.Headers.ConnectionClose = true;
+		using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(continueOnCapturedContext: false);
+		if (!response.IsSuccessStatusCode)
+		{
+			return null;
+		}
+		long? contentLength = response.Content.Headers.ContentLength;
+		if (contentLength.HasValue && contentLength.GetValueOrDefault() > 16777216)
+		{
+			return null;
+		}
+		string result;
+		await using (Stream stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(continueOnCapturedContext: false))
+		{
+			using MemoryStream buffer = new MemoryStream();
+			byte[] chunk = new byte[65536];
+			while (true)
+			{
+				int num2 = await stream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(continueOnCapturedContext: false);
+				if (num2 != 0)
+				{
+					if (buffer.Length + num2 > 16777216)
+					{
+						result = null;
+						break;
+					}
+					buffer.Write(chunk, 0, num2);
+					continue;
+				}
+				result = Encoding.UTF8.GetString(buffer.GetBuffer(), 0, checked((int)buffer.Length));
+				break;
+			}
+		}
+		return result;
+	}
 
-            foreach (var element in array.Value.EnumerateArray())
-            {
-                if (element.ValueKind == JsonValueKind.String)
-                {
-                    result.Add(new PeerEntry(element.GetString() ?? "", "", "", ""));
-                    continue;
-                }
+	private static async ValueTask<Stream> ConnectTrustedApiAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+	{
+		if (!string.Equals(context.DnsEndPoint.Host, "127.0.0.1", StringComparison.Ordinal) || context.DnsEndPoint.Port != 7432 || !context.InitialRequestMessage.Options.TryGetValue(ExpectedApiProcessId, out var expectedPid))
+		{
+			throw new HttpRequestException("Control API endpoint/process binding is missing.");
+		}
+		Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+		{
+			NoDelay = true
+		};
+		try
+		{
+			await socket.ConnectAsync(new IPEndPoint(IPAddress.Loopback, 7432), ct).ConfigureAwait(continueOnCapturedContext: false);
+			if (!(socket.LocalEndPoint is IPEndPoint iPEndPoint) || !IsExactTrustedEstablishedApiConnection(iPEndPoint.Port, expectedPid))
+			{
+				throw new HttpRequestException("Control API connection is not owned by the installed p2p-agent process.");
+			}
+			return new NetworkStream(socket, ownsSocket: true);
+		}
+		catch
+		{
+			socket.Dispose();
+			throw;
+		}
+	}
 
-                if (element.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
+	private static int? TryGetTrustedApiListenerPid()
+	{
+		if (!OperatingSystem.IsWindows())
+		{
+			return null;
+		}
+		int size = 0;
+		if (GetExtendedTcpTable(IntPtr.Zero, ref size, order: false, 2, TcpTableClass.OwnerPidListener, 0u) != 122 || size < 4 || size > 4194304)
+		{
+			return null;
+		}
+		nint num = Marshal.AllocHGlobal(size);
+		try
+		{
+			if (GetExtendedTcpTable(num, ref size, order: false, 2, TcpTableClass.OwnerPidListener, 0u) != 0 || size < 4)
+			{
+				return null;
+			}
+			int num2 = Marshal.ReadInt32(num);
+			int num3 = Marshal.SizeOf<MibTcpRowOwnerPid>();
+			if (num2 < 0 || 4 + (long)num2 * (long)num3 > size)
+			{
+				return null;
+			}
+			int? result = null;
+			for (int i = 0; i < num2; i++)
+			{
+				MibTcpRowOwnerPid mibTcpRowOwnerPid = Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(num, 4 + i * num3));
+				checked
+				{
+					if (mibTcpRowOwnerPid.State == 2 && DecodeNetworkPort(mibTcpRowOwnerPid.LocalPort) == 7432 && IsIpv4Loopback(mibTcpRowOwnerPid.LocalAddress))
+					{
+						if (!IsExactAgentProcess(mibTcpRowOwnerPid.OwningPid))
+						{
+							return null;
+						}
+						if (result.HasValue && result.Value != (int)mibTcpRowOwnerPid.OwningPid)
+						{
+							return null;
+						}
+						result = (int)mibTcpRowOwnerPid.OwningPid;
+					}
+				}
+			}
+			return result;
+		}
+		catch
+		{
+			return null;
+		}
+		finally
+		{
+			Marshal.FreeHGlobal(num);
+		}
+	}
 
-                var peerId = PickString(element, "peer_id", "peerId", "id") ?? "";
-                var name = PickString(element, "agent_name", "name") ?? "";
-                var path = PickString(element, "connection_path", "delivery_path") ?? "";
-                var scope = PickString(element, "scope", "role", "kind") ?? "";
+	private static bool IsExactTrustedEstablishedApiConnection(int clientLocalPort, int expectedPid)
+	{
+		bool flag = !OperatingSystem.IsWindows();
+		if (!flag)
+		{
+			bool flag2 = ((clientLocalPort <= 0 || clientLocalPort > 65535) ? true : false);
+			flag = flag2;
+		}
+		if (flag || expectedPid <= 0 || !IsExactAgentProcess(checked((uint)expectedPid)))
+		{
+			return false;
+		}
+		int size = 0;
+		if (GetExtendedTcpTable(IntPtr.Zero, ref size, order: false, 2, TcpTableClass.OwnerPidAll, 0u) != 122 || size < 4 || size > 4194304)
+		{
+			return false;
+		}
+		nint num = Marshal.AllocHGlobal(size);
+		try
+		{
+			if (GetExtendedTcpTable(num, ref size, order: false, 2, TcpTableClass.OwnerPidAll, 0u) != 0 || size < 4)
+			{
+				flag = false;
+			}
+			else
+			{
+				int num2 = Marshal.ReadInt32(num);
+				int num3 = Marshal.SizeOf<MibTcpRowOwnerPid>();
+				if (num2 < 0 || 4 + (long)num2 * (long)num3 > size)
+				{
+					flag = false;
+				}
+				else
+				{
+					int num4 = 0;
+					while (true)
+					{
+						if (num4 < num2)
+						{
+							MibTcpRowOwnerPid mibTcpRowOwnerPid = Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(num, 4 + num4 * num3));
+							if (mibTcpRowOwnerPid.State == 5 && IsIpv4Loopback(mibTcpRowOwnerPid.LocalAddress) && DecodeNetworkPort(mibTcpRowOwnerPid.LocalPort) == 7432 && IsIpv4Loopback(mibTcpRowOwnerPid.RemoteAddress) && DecodeNetworkPort(mibTcpRowOwnerPid.RemotePort) == clientLocalPort && mibTcpRowOwnerPid.OwningPid == checked((uint)expectedPid))
+							{
+								flag = IsExactAgentProcess(mibTcpRowOwnerPid.OwningPid);
+								break;
+							}
+							num4++;
+							continue;
+						}
+						flag = false;
+						break;
+					}
+				}
+			}
+		}
+		catch
+		{
+			flag = false;
+		}
+		finally
+		{
+			Marshal.FreeHGlobal(num);
+		}
+		return flag;
+	}
 
-                if (peerId.Length > 0)
-                {
-                    result.Add(new PeerEntry(peerId, name, path, scope));
-                }
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            // 保持空列表
-        }
+	private static int DecodeNetworkPort(uint value)
+	{
+		byte[] bytes = BitConverter.GetBytes(value);
+		return (bytes[0] << 8) | bytes[1];
+	}
 
-        return result;
-    }
+	private static bool IsIpv4Loopback(uint value)
+	{
+		byte[] bytes = BitConverter.GetBytes(value);
+		if (bytes != null && bytes.Length == 4 && bytes[0] == 127 && bytes[1] == 0 && bytes[2] == 0)
+		{
+			return bytes[3] == 1;
+		}
+		return false;
+	}
 
-    private static JsonElement Unwrap(JsonElement root)
-    {
-        // 兼容 { "result": {...} } 或 { "data": {...} } 包装
-        foreach (var key in new[] { "result", "data", "info" })
-        {
-            if (root.ValueKind == JsonValueKind.Object &&
-                root.TryGetProperty(key, out var inner) &&
-                inner.ValueKind == JsonValueKind.Object)
-            {
-                return inner;
-            }
-        }
+	private static bool IsExactAgentProcess(uint pid)
+	{
+		if (pid == 0 || pid > int.MaxValue)
+		{
+			return false;
+		}
+		try
+		{
+			using Process process = Process.GetProcessById(checked((int)pid));
+			if (process.HasExited || !string.Equals(process.ProcessName, "p2p-agent", StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+			string text = process.MainModule?.FileName;
+			return text != null && string.Equals(Path.GetFullPath(text).TrimEnd('\\', '/'), Path.GetFullPath(AppPaths.AgentExe).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+		}
+		catch
+		{
+			return false;
+		}
+	}
 
-        return root;
-    }
+	public async Task<AgentInfo?> GetInfoAsync(CancellationToken ct = default(CancellationToken))
+	{
+		try
+		{
+			string text = await GetAsync("/v1/info", ct).ConfigureAwait(continueOnCapturedContext: false);
+			if (text == null)
+			{
+				return null;
+			}
+			using JsonDocument jsonDocument = JsonDocument.Parse(text);
+			JsonElement element = Unwrap(jsonDocument.RootElement);
+			string text2 = PickString(element, "peer_id", "peerId", "id");
+			string text3 = PickString(element, "version");
+			string text4 = PickString(element, "agent_name", "name");
+			string text5 = PickString(element, "relay_peer_id");
+			if (!AgentConfigService.IsValidPeerId(text2) || string.IsNullOrWhiteSpace(text3))
+			{
+				return null;
+			}
+			return new AgentInfo(text2 ?? "", text3 ?? "", text4 ?? "", text5 ?? "", PickBool(element, "reservation_ready"), PickBool(element, "mdns_ready"), PickInt(element, "connected_remote_count"), PickInt(element, "running_tasks"), PickInt(element, "available_task_slots"), PickStringArray(element, "listen_addresses", "addresses", "addrs"), Prettify(text));
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch
+		{
+			return null;
+		}
+	}
 
-    private static JsonElement? FindArray(JsonElement root, params string[] candidates)
-    {
-        if (root.ValueKind == JsonValueKind.Array)
-        {
-            return root;
-        }
+	public async Task<string?> GetPeersRawAsync(CancellationToken ct = default(CancellationToken))
+	{
+		try
+		{
+			string text = await GetAsync("/v1/peers", ct).ConfigureAwait(continueOnCapturedContext: false);
+			return (text == null) ? null : Prettify(text);
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch
+		{
+			return null;
+		}
+	}
 
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
+	public async Task<PeerQueryResult> GetPeersResultAsync(CancellationToken ct = default(CancellationToken))
+	{
+		List<PeerEntry> result = new List<PeerEntry>();
+		try
+		{
+			string text = await GetAsync("/v1/peers", ct).ConfigureAwait(continueOnCapturedContext: false);
+			if (text == null)
+			{
+				return new PeerQueryResult(Success: false, "request_failed", result);
+			}
+			using JsonDocument jsonDocument = JsonDocument.Parse(text);
+			JsonElement? jsonElement = FindPeersArray(jsonDocument.RootElement);
+			if (!jsonElement.HasValue)
+			{
+				return new PeerQueryResult(Success: false, "peers_array_missing", result);
+			}
+			HashSet<string> hashSet = new HashSet<string>(StringComparer.Ordinal);
+			foreach (JsonElement item in jsonElement.Value.EnumerateArray())
+			{
+				if (item.ValueKind != JsonValueKind.Object)
+				{
+					return new PeerQueryResult(Success: false, "peer_entry_invalid", Array.Empty<PeerEntry>());
+				}
+				string text2 = PickString(item, "peer_id", "peerId", "id") ?? "";
+				string name = PickString(item, "agent_name", "name") ?? "";
+				string connectionPath = PickString(item, "path", "connection_path", "delivery_path") ?? "";
+				string scope = PickString(item, "scope", "role", "kind") ?? "";
+				if (!AgentConfigService.IsValidPeerId(text2))
+				{
+					return new PeerQueryResult(Success: false, "peer_id_invalid", Array.Empty<PeerEntry>());
+				}
+				if (!hashSet.Add(text2))
+				{
+					return new PeerQueryResult(Success: false, "peer_id_duplicate", Array.Empty<PeerEntry>());
+				}
+				result.Add(new PeerEntry(text2, name, connectionPath, scope));
+			}
+			return new PeerQueryResult(Success: true, "", result);
+		}
+		catch (OperationCanceledException) when (ct.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (JsonException)
+		{
+			return new PeerQueryResult(Success: false, "json_invalid", Array.Empty<PeerEntry>());
+		}
+		catch
+		{
+			return new PeerQueryResult(Success: false, "read_failed", Array.Empty<PeerEntry>());
+		}
+	}
 
-        foreach (var key in candidates)
-        {
-            if (root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Array)
-            {
-                return value;
-            }
-        }
+	public async Task<IReadOnlyList<PeerEntry>> GetPeersAsync(CancellationToken ct = default(CancellationToken))
+	{
+		PeerQueryResult peerQueryResult = await GetPeersResultAsync(ct).ConfigureAwait(continueOnCapturedContext: false);
+		IReadOnlyList<PeerEntry> result;
+		if (!peerQueryResult.Success)
+		{
+			IReadOnlyList<PeerEntry> readOnlyList = Array.Empty<PeerEntry>();
+			result = readOnlyList;
+		}
+		else
+		{
+			result = peerQueryResult.Peers;
+		}
+		return result;
+	}
 
-        foreach (var wrapper in new[] { "result", "data" })
-        {
-            if (root.TryGetProperty(wrapper, out var inner))
-            {
-                var nested = FindArray(inner, candidates);
-                if (nested is not null)
-                {
-                    return nested;
-                }
-            }
-        }
+	private static JsonElement Unwrap(JsonElement root)
+	{
+		string[] array = new string[3] { "result", "data", "info" };
+		foreach (string propertyName in array)
+		{
+			if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Object)
+			{
+				return value;
+			}
+		}
+		return root;
+	}
 
-        return null;
-    }
+	private static JsonElement? FindPeersArray(JsonElement root)
+	{
+		if (root.ValueKind == JsonValueKind.Array)
+		{
+			return root;
+		}
+		if (root.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+		string[] array = new string[2] { "peers", "nodes" };
+		foreach (string propertyName in array)
+		{
+			if (root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Array)
+			{
+				return value;
+			}
+		}
+		array = new string[2] { "result", "data" };
+		foreach (string propertyName2 in array)
+		{
+			if (!root.TryGetProperty(propertyName2, out var value2) || value2.ValueKind != JsonValueKind.Object)
+			{
+				continue;
+			}
+			string[] array2 = new string[2] { "peers", "nodes" };
+			foreach (string propertyName3 in array2)
+			{
+				if (value2.TryGetProperty(propertyName3, out var value3) && value3.ValueKind == JsonValueKind.Array)
+				{
+					return value3;
+				}
+			}
+		}
+		return null;
+	}
 
-    private static string? PickString(JsonElement element, params string[] candidates)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
+	private static string? PickString(JsonElement element, params string[] candidates)
+	{
+		if (element.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+		foreach (string propertyName in candidates)
+		{
+			if (!element.TryGetProperty(propertyName, out var value))
+			{
+				continue;
+			}
+			switch (value.ValueKind)
+			{
+			case JsonValueKind.String:
+			{
+				string text = value.GetString();
+				if (!string.IsNullOrWhiteSpace(text))
+				{
+					return text;
+				}
+				break;
+			}
+			case JsonValueKind.Number:
+				return value.ToString();
+			}
+		}
+		return null;
+	}
 
-        foreach (var key in candidates)
-        {
-            if (!element.TryGetProperty(key, out var value))
-            {
-                continue;
-            }
+	private static bool? PickBool(JsonElement element, params string[] candidates)
+	{
+		if (element.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+		foreach (string propertyName in candidates)
+		{
+			if (element.TryGetProperty(propertyName, out var value))
+			{
+				if (value.ValueKind == JsonValueKind.True)
+				{
+					return true;
+				}
+				if (value.ValueKind == JsonValueKind.False)
+				{
+					return false;
+				}
+			}
+		}
+		return null;
+	}
 
-            switch (value.ValueKind)
-            {
-                case JsonValueKind.String:
-                    var s = value.GetString();
-                    if (!string.IsNullOrWhiteSpace(s))
-                    {
-                        return s;
-                    }
+	private static int? PickInt(JsonElement element, params string[] candidates)
+	{
+		if (element.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+		foreach (string propertyName in candidates)
+		{
+			if (element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var value2))
+			{
+				return value2;
+			}
+		}
+		return null;
+	}
 
-                    break;
-                case JsonValueKind.Number:
-                    return value.ToString();
-            }
-        }
+	private static IReadOnlyList<string> PickStringArray(JsonElement element, params string[] candidates)
+	{
+		List<string> list = new List<string>();
+		if (element.ValueKind != JsonValueKind.Object)
+		{
+			return list;
+		}
+		foreach (string propertyName in candidates)
+		{
+			if (!element.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+			{
+				continue;
+			}
+			foreach (JsonElement item in value.EnumerateArray())
+			{
+				if (item.ValueKind == JsonValueKind.String)
+				{
+					string text = item.GetString();
+					if (!string.IsNullOrWhiteSpace(text))
+					{
+						list.Add(text);
+					}
+				}
+			}
+			if (list.Count > 0)
+			{
+				break;
+			}
+		}
+		return list;
+	}
 
-        return null;
-    }
+	private static string Prettify(string json)
+	{
+		try
+		{
+			using JsonDocument jsonDocument = JsonDocument.Parse(json);
+			return JsonSerializer.Serialize(jsonDocument.RootElement, PrettyOptions);
+		}
+		catch
+		{
+			return json;
+		}
+	}
 
-    private static bool? PickBool(JsonElement element, params string[] candidates)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
+	[DllImport("iphlpapi.dll", SetLastError = true)]
+	private static extern uint GetExtendedTcpTable(nint tcpTable, ref int size, [MarshalAs(UnmanagedType.Bool)] bool order, int addressFamily, TcpTableClass tableClass, uint reserved);
 
-        foreach (var key in candidates)
-        {
-            if (element.TryGetProperty(key, out var value))
-            {
-                if (value.ValueKind == JsonValueKind.True) return true;
-                if (value.ValueKind == JsonValueKind.False) return false;
-            }
-        }
-
-        return null;
-    }
-
-    private static int? PickInt(JsonElement element, params string[] candidates)
-    {
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        foreach (var key in candidates)
-        {
-            if (element.TryGetProperty(key, out var value) &&
-                value.ValueKind == JsonValueKind.Number &&
-                value.TryGetInt32(out var number))
-            {
-                return number;
-            }
-        }
-
-        return null;
-    }
-
-    private static IReadOnlyList<string> PickStringArray(JsonElement element, params string[] candidates)
-    {
-        var result = new List<string>();
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            return result;
-        }
-
-        foreach (var key in candidates)
-        {
-            if (!element.TryGetProperty(key, out var value) || value.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            foreach (var item in value.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.String)
-                {
-                    var text = item.GetString();
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        result.Add(text);
-                    }
-                }
-            }
-
-            if (result.Count > 0)
-            {
-                break;
-            }
-        }
-
-        return result;
-    }
-
-    private static string Prettify(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            return JsonSerializer.Serialize(doc.RootElement, PrettyOptions);
-        }
-        catch
-        {
-            return json;
-        }
-    }
-
-    public void Dispose() => _http.Dispose();
+	public void Dispose()
+	{
+		_http.Dispose();
+	}
 }

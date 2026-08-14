@@ -69,6 +69,14 @@ public sealed class AsyncRelayCommand : ICommand
 
     public event EventHandler? CanExecuteChanged;
 
+    /// <summary>
+    /// Last-resort reporting hook for an exception that escaped a command. View
+    /// models should still handle expected operation failures themselves; this
+    /// hook keeps an accidental omission from becoming an async-void dispatcher
+    /// crash that closes the entire management UI.
+    /// </summary>
+    public static event EventHandler<Exception>? UnhandledException;
+
     public bool CanExecute(object? parameter) => !_running && (_canExecute?.Invoke(parameter) ?? true);
 
     public async void Execute(object? parameter)
@@ -84,6 +92,15 @@ public sealed class AsyncRelayCommand : ICommand
         try
         {
             await _execute(parameter).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is an expected command outcome (for example when a
+            // window is closing) and must not be presented as an application bug.
+        }
+        catch (Exception ex)
+        {
+            UnhandledException?.Invoke(this, ex);
         }
         finally
         {

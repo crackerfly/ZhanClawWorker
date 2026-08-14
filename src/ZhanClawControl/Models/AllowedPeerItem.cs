@@ -1,3 +1,4 @@
+#nullable disable warnings
 using ZhanClawControl.Infrastructure;
 using ZhanClawControl.Services;
 
@@ -5,56 +6,95 @@ namespace ZhanClawControl.Models;
 
 public sealed class AllowedPeerItem : ObservableObject
 {
-    private string _peerId = "";
-    private string _note = "";
-    private bool _online;
+	private string _peerId = "";
 
-    public string PeerId
-    {
-        get => _peerId;
-        set
-        {
-            if (SetProperty(ref _peerId, value))
-            {
-                OnPropertyChanged(nameof(ShortPeerId));
-            }
-        }
-    }
+	private string _note = "";
 
-    public string Note
-    {
-        get => _note;
-        set => SetProperty(ref _note, value);
-    }
+	private bool? _online;
 
-    /// <summary>该主控当前是否在已连接 Peer 列表中。</summary>
-    public bool Online
-    {
-        get => _online;
-        set
-        {
-            if (SetProperty(ref _online, value))
-            {
-                OnPropertyChanged(nameof(OnlineText));
-            }
-        }
-    }
+	public string PeerId
+	{
+		get
+		{
+			return _peerId;
+		}
+		set
+		{
+			if (SetProperty(ref _peerId, value, "PeerId"))
+			{
+				OnPropertyChanged("ShortPeerId");
+			}
+		}
+	}
 
-    public string OnlineText => Online
-        ? App.Localization.Text("AuthorizationOnline")
-        : App.Localization.Text("AuthorizationOffline");
+	public string Note
+	{
+		get
+		{
+			return _note;
+		}
+		set
+		{
+			SetProperty(ref _note, value, "Note");
+		}
+	}
 
-    public void RefreshLanguage() => OnPropertyChanged(nameof(OnlineText));
+	public bool? Online
+	{
+		get
+		{
+			return _online;
+		}
+		set
+		{
+			if (SetProperty(ref _online, value, "Online"))
+			{
+				OnPropertyChanged("OnlineText");
+			}
+		}
+	}
 
-    public string ShortPeerId =>
-        PeerId.Length > 20 ? $"{PeerId[..10]}…{PeerId[^8..]}" : PeerId;
+	public string OnlineText
+	{
+		get
+		{
+			bool? online = Online;
+			if (online.HasValue)
+			{
+				if (online == true)
+				{
+					return App.Localization.Text("AuthorizationOnline");
+				}
+				return App.Localization.Text("AuthorizationOffline");
+			}
+			return App.Localization.Text("AuthorizationUnknown");
+		}
+	}
 
-    /// <summary>
-    /// Delegates to the central base58/multihash validator so every UI entry point
-    /// uses the same boundary as configuration persistence.
-    /// </summary>
-    public static bool LooksLikePeerId(string value)
-    {
-        return AgentConfigService.IsValidPeerId(value);
-    }
+	public string ShortPeerId
+	{
+		get
+		{
+			if (PeerId.Length <= 20)
+			{
+				return PeerId;
+			}
+			string text = PeerId.Substring(0, 10);
+			string peerId = PeerId;
+			int length = peerId.Length;
+			int num = length - 8;
+			return text + "…" + peerId.Substring(num, length - num);
+		}
+	}
+
+	public void RefreshLanguage()
+	{
+		OnPropertyChanged("OnlineText");
+	}
+
+	public static bool LooksLikePeerId(string value)
+	{
+		return AgentConfigService.IsValidPeerId(value);
+	}
 }
+

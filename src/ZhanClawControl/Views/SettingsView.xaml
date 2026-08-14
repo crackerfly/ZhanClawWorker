@@ -11,7 +11,13 @@
                 <TextBlock Text="{DynamicResource SettingsPending}" Style="{StaticResource CaptionText}" />
             </Border>
 
-            <Border Style="{StaticResource Card}">
+            <Border Background="{DynamicResource BrandSubtleBrush}" CornerRadius="6" Padding="12,10"
+                    Margin="0,0,0,12"
+                    Visibility="{Binding HasConfigurationLoadWarning, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{Binding ConfigurationLoadWarning}" TextWrapping="Wrap" />
+            </Border>
+
+            <Border Style="{StaticResource Card}" IsEnabled="{Binding ConfigurationLoaded}">
                 <StackPanel>
                     <TextBlock Text="{DynamicResource SettingsIdentity}" Style="{StaticResource SectionTitle}" />
                     <TextBlock Text="{DynamicResource SettingsAgentName}" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
@@ -23,22 +29,27 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource Card}">
+            <Border Style="{StaticResource Card}" IsEnabled="{Binding ConfigurationLoaded}">
                 <StackPanel>
                     <TextBlock Text="{DynamicResource SettingsNetwork}" Style="{StaticResource SectionTitle}" />
                     <TextBlock Text="{DynamicResource SettingsBootstrap}" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
                     <TextBox Text="{Binding BootstrapAddrs, UpdateSourceTrigger=PropertyChanged}"
                              AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="88"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                             VerticalContentAlignment="Top" FontFamily="Cascadia Mono, Consolas" FontSize="12"
-                             Margin="0,0,0,12" AutomationProperties.Name="{DynamicResource SettingsBootstrap}" />
+                             VerticalContentAlignment="Top" FontFamily="{StaticResource MonoFontFamily}" FontSize="12"
+                             Margin="0,0,0,5" AutomationProperties.Name="{DynamicResource SettingsBootstrap}" />
+                    <TextBlock Text="{DynamicResource SettingsBootstrapHelp}" Style="{StaticResource CaptionText}"
+                               Margin="0,0,0,12" TextWrapping="Wrap" />
                     <TextBlock Text="{DynamicResource SettingsRendezvous}" Style="{StaticResource CaptionText}" Margin="0,0,0,4" />
                     <TextBox Text="{Binding RendezvousGroup, UpdateSourceTrigger=PropertyChanged}"
-                             AutomationProperties.Name="{DynamicResource SettingsRendezvous}" />
+                             AutomationProperties.Name="{DynamicResource SettingsRendezvous}"
+                             Margin="0,0,0,5" />
+                    <TextBlock Text="{DynamicResource SettingsRendezvousHelp}" Style="{StaticResource CaptionText}"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource Card}">
+            <Border Style="{StaticResource Card}" IsEnabled="{Binding ConfigurationLoaded}">
                 <StackPanel>
                     <TextBlock Text="{DynamicResource SettingsLimits}" Style="{StaticResource SectionTitle}" />
                     <Grid Margin="0,0,0,12">
@@ -57,6 +68,14 @@
                         <TextBlock Grid.Column="2" Text="{DynamicResource SettingsTransferHelp}" Style="{StaticResource CaptionText}"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
                     </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="{DynamicResource SettingsRuntimeRiskTitle}" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="{DynamicResource SettingsRuntimeRiskHelp}" Style="{StaticResource CaptionText}"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
@@ -89,12 +108,12 @@
                     <Grid Margin="0,0,0,7">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <TextBlock Text="{DynamicResource SettingsProgramFolder}" Style="{StaticResource CaptionText}" />
-                        <TextBlock Grid.Column="1" Text="{Binding InstallRootText}" FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
+                        <TextBlock Grid.Column="1" Text="{Binding InstallRootText}" FontFamily="{StaticResource MonoFontFamily}" TextWrapping="Wrap" />
                     </Grid>
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <TextBlock Text="{DynamicResource SettingsDataFolder}" Style="{StaticResource CaptionText}" />
-                        <TextBlock Grid.Column="1" Text="{Binding DataRootText}" FontFamily="Cascadia Mono, Consolas" TextWrapping="Wrap" />
+                        <TextBlock Grid.Column="1" Text="{Binding DataRootText}" FontFamily="{StaticResource MonoFontFamily}" TextWrapping="Wrap" />
                     </Grid>
                     <TextBlock Text="{DynamicResource SettingsSecretHelp}" Style="{StaticResource CaptionText}" Margin="0,12,0,0" />
                 </StackPanel>

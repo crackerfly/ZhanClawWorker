@@ -8,6 +8,12 @@
             <TextBlock Text="{DynamicResource AuthorizationDescription}" Style="{StaticResource CaptionText}"
                        Margin="0,4,0,22" />
 
+            <Border Background="{DynamicResource BrandSubtleBrush}" CornerRadius="6" Padding="12,10"
+                    Margin="0,0,0,12"
+                    Visibility="{Binding HasLoadWarning, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{Binding LoadWarning}" TextWrapping="Wrap" />
+            </Border>
+
             <Border Style="{StaticResource Card}">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -30,7 +36,7 @@
                     <Grid Margin="0,0,0,6">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBox Text="{Binding NewPeerId, UpdateSourceTrigger=PropertyChanged}"
-                                 FontFamily="Cascadia Mono, Consolas"
+                                 FontFamily="{StaticResource MonoFontFamily}"
                                  AutomationProperties.Name="{DynamicResource WizardControllerPeerId}" />
                         <Button Grid.Column="1" Content="{DynamicResource CommonPaste}" Margin="8,0,0,0"
                                 Command="{Binding PasteCommand}" />
@@ -72,9 +78,9 @@
                                Margin="0,0,0,10" Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}" />
                     <DataGrid ItemsSource="{Binding Peers}" SelectedItem="{Binding Selected, Mode=TwoWay}" MaxHeight="300">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="{DynamicResource ColumnNote}" Binding="{Binding Note}" Width="190" />
-                            <DataGridTextColumn Header="{DynamicResource ColumnPeerId}" Binding="{Binding ShortPeerId}" Width="*" />
-                            <DataGridTextColumn Header="{DynamicResource ColumnConnection}" Binding="{Binding OnlineText}" Width="120" />
+                            <DataGridTextColumn Header="{DynamicResource ColumnNote}" Binding="{Binding Note, Mode=OneWay}" Width="190" />
+                            <DataGridTextColumn Header="{DynamicResource ColumnPeerId}" Binding="{Binding ShortPeerId, Mode=OneWay}" Width="*" />
+                            <DataGridTextColumn Header="{DynamicResource ColumnConnection}" Binding="{Binding OnlineText, Mode=OneWay}" Width="120" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </StackPanel>

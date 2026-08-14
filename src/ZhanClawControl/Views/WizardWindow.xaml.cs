@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using ZhanClawControl.Services;
 using ZhanClawControl.ViewModels;
+using ZhanClawControl.Views.Dialogs;
 
 namespace ZhanClawControl.Views;
 
@@ -47,7 +48,8 @@ public partial class WizardWindow : Window
 
         if (_viewModel.Installing)
         {
-            MessageBox.Show(
+            AppDialog.Show(
+                this,
                 App.Localization.Text("WizardInstallingClose"),
                 App.Localization.Text("ProductName"),
                 MessageBoxButton.OK,
@@ -63,13 +65,17 @@ public partial class WizardWindow : Window
             return;
         }
 
-        var confirm = MessageBox.Show(
-            App.Localization.Text("WizardExitConfirm"),
-            App.Localization.Text("WizardExitTitle"),
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Question);
+        var confirm = AppDialog.ShowActions(
+            "WizardExitConfirm",
+            "WizardExitTitle",
+            [
+                new("exit", "DialogActionExitSetup", AppDialogActionStyle.Danger),
+                new("continue", "DialogActionContinueSetup", IsDefault: true, IsCancel: true)
+            ],
+            MessageBoxImage.Warning,
+            this);
 
-        if (confirm != MessageBoxResult.OK)
+        if (confirm != "exit")
         {
             e.Cancel = true;
             return;

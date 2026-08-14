@@ -8,6 +8,184 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if ($PSVersionTable.PSVersion.Major -lt 5 -or
+    ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1)) {
+    throw 'Test-Payload.ps1 需要 Windows PowerShell 5.1 或 PowerShell 7+。'
+}
+
+function Get-Sha256HexFromBytes([byte[]]$Bytes) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash($Bytes)
+        return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Join-ByteArrays([byte[]]$First, [byte[]]$Second) {
+    [byte[]]$result = [Array]::CreateInstance([byte], $First.Length + $Second.Length)
+    [Buffer]::BlockCopy($First, 0, $result, 0, $First.Length)
+    [Buffer]::BlockCopy($Second, 0, $result, $First.Length, $Second.Length)
+    return $result
+}
+
+function ConvertTo-DerLength([int]$Length) {
+    if ($Length -lt 0) {
+        throw 'DER 长度不能为负数。'
+    }
+
+    if ($Length -lt 128) {
+        return [byte[]]@([byte]$Length)
+    }
+
+    $octets = New-Object 'System.Collections.Generic.List[byte]'
+    $remaining = [uint32]$Length
+    while ($remaining -gt 0) {
+        [void]$octets.Add([byte]($remaining -band 0xff))
+        $remaining = $remaining -shr 8
+    }
+
+    [byte[]]$encoded = [Array]::CreateInstance([byte], 1 + $octets.Count)
+    $encoded[0] = [byte](0x80 -bor $octets.Count)
+    for ($index = 0; $index -lt $octets.Count; $index++) {
+        $encoded[$index + 1] = $octets[$octets.Count - 1 - $index]
+    }
+    return $encoded
+}
+
+function New-DerElement([byte]$Tag, [byte[]]$Content) {
+    [byte[]]$length = ConvertTo-DerLength $Content.Length
+    [byte[]]$result = [Array]::CreateInstance([byte], 1 + $length.Length + $Content.Length)
+    $result[0] = $Tag
+    [Buffer]::BlockCopy($length, 0, $result, 1, $length.Length)
+    [Buffer]::BlockCopy($Content, 0, $result, 1 + $length.Length, $Content.Length)
+    return $result
+}
+
+function Add-OidArc(
+    [System.Collections.Generic.List[byte]]$Target,
+    [uint64]$Value
+) {
+    $encoded = New-Object 'System.Collections.Generic.List[byte]'
+    do {
+        [void]$encoded.Add([byte]($Value -band [uint64]0x7f))
+        $Value = $Value -shr 7
+    } while ($Value -gt 0)
+
+    for ($index = $encoded.Count - 1; $index -ge 0; $index--) {
+        $octet = $encoded[$index]
+        if ($index -ne 0) {
+            $octet = [byte]($octet -bor 0x80)
+        }
+        [void]$Target.Add($octet)
+    }
+}
+
+function ConvertTo-DerOidContent([string]$Oid) {
+    if ($Oid -notmatch '^\d+(?:\.\d+)+$') {
+        throw "证书公钥算法 OID 无效：$Oid"
+    }
+
+    [uint64[]]$arcs = @($Oid.Split('.') | ForEach-Object { [uint64]::Parse($_) })
+    if ($arcs.Count -lt 2 -or $arcs[0] -gt 2 -or ($arcs[0] -lt 2 -and $arcs[1] -gt 39)) {
+        throw "证书公钥算法 OID 无效：$Oid"
+    }
+
+    $result = New-Object 'System.Collections.Generic.List[byte]'
+    Add-OidArc $result ([uint64](40 * $arcs[0] + $arcs[1]))
+    for ($index = 2; $index -lt $arcs.Count; $index++) {
+        Add-OidArc $result $arcs[$index]
+    }
+    return $result.ToArray()
+}
+
+function Get-SubjectPublicKeyInfo([Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
+    # X509Certificate2.PublicKey exposes the exact ASN.1 algorithm parameters and
+    # encoded key value on .NET Framework 4.8. Re-wrap those values as RFC 5280
+    # SubjectPublicKeyInfo so this check works in Windows PowerShell 5.1 without
+    # relying on the newer public-key export helper from modern .NET runtimes.
+    $oidValue = [string]$Certificate.PublicKey.Oid.Value
+    [byte[]]$oidContent = ConvertTo-DerOidContent $oidValue
+    [byte[]]$oidElement = New-DerElement 0x06 $oidContent
+    [byte[]]$parameters = @($Certificate.PublicKey.EncodedParameters.RawData)
+    [byte[]]$algorithmContent = Join-ByteArrays $oidElement $parameters
+    [byte[]]$algorithm = New-DerElement 0x30 $algorithmContent
+
+    [byte[]]$keyValue = @($Certificate.PublicKey.EncodedKeyValue.RawData)
+    [byte[]]$bitStringContent = [Array]::CreateInstance([byte], 1 + $keyValue.Length)
+    # First byte is the number of unused bits. Public keys used here are byte-aligned.
+    $bitStringContent[0] = 0
+    [Buffer]::BlockCopy($keyValue, 0, $bitStringContent, 1, $keyValue.Length)
+    [byte[]]$bitString = New-DerElement 0x03 $bitStringContent
+
+    [byte[]]$spkiContent = Join-ByteArrays $algorithm $bitString
+    return (New-DerElement 0x30 $spkiContent)
+}
+
+function Test-PeLayout([string]$Path, [string]$ExpectedMachine, [string]$ExpectedSubsystem) {
+    $machineLabel = $ExpectedMachine.Trim().ToLowerInvariant()
+    $subsystemLabel = $ExpectedSubsystem.Trim().ToLowerInvariant()
+    if ($machineLabel -ne 'amd64') {
+        throw "payload manifest 的 pe_machine 不受支持：$ExpectedMachine"
+    }
+    if ($subsystemLabel -ne 'console') {
+        throw "payload manifest 的 pe_subsystem 不受支持：$ExpectedSubsystem"
+    }
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $reader = New-Object IO.BinaryReader($stream)
+    try {
+        if ($stream.Length -lt 96) {
+            throw 'p2p-agent.exe 不是有效 PE 文件：文件过短。'
+        }
+
+        $stream.Position = 0
+        if ($reader.ReadUInt16() -ne 0x5a4d) {
+            throw 'p2p-agent.exe 不是有效 PE 文件：缺少 MZ 头。'
+        }
+
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadInt32()
+        if ($peOffset -lt 0 -or ([long]$peOffset + 94) -gt $stream.Length) {
+            throw 'p2p-agent.exe 不是有效 PE 文件：PE 头越界。'
+        }
+
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw 'p2p-agent.exe 不是有效 PE 文件：缺少 PE 签名。'
+        }
+
+        $machine = $reader.ReadUInt16()
+        if ($machine -ne 0x8664) {
+            throw ('PE 架构不是 AMD64：0x{0:x4}' -f $machine)
+        }
+
+        $stream.Position = $peOffset + 20
+        $optionalHeaderSize = $reader.ReadUInt16()
+        if ($optionalHeaderSize -lt 70 -or
+            ([long]$peOffset + 24 + $optionalHeaderSize) -gt $stream.Length) {
+            throw 'p2p-agent.exe 不是有效 PE 文件：可选头越界。'
+        }
+
+        $stream.Position = $peOffset + 24
+        if ($reader.ReadUInt16() -ne 0x020b) {
+            throw 'p2p-agent.exe 不是 PE32+ 文件。'
+        }
+
+        $stream.Position = $peOffset + 92
+        $subsystem = $reader.ReadUInt16()
+        if ($subsystem -ne 3) {
+            throw "PE 子系统不是 Console：$subsystem"
+        }
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Resolve-ExistingFile([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label 不存在：$Path"
@@ -34,29 +212,7 @@ if ($actualHash -ne $expectedHash) {
     throw "p2p-agent.exe SHA-256 不匹配。expected=$expectedHash actual=$actualHash"
 }
 
-$stream = [IO.File]::Open($agentFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-try {
-    $reader = [System.Reflection.PortableExecutable.PEReader]::new($stream)
-    try {
-        if (-not $reader.HasMetadata -and $null -eq $reader.PEHeaders.PEHeader) {
-            throw 'p2p-agent.exe 不是有效 PE 文件。'
-        }
-
-        if ([string]$reader.PEHeaders.CoffHeader.Machine -ne 'Amd64') {
-            throw "PE 架构不是 AMD64：$($reader.PEHeaders.CoffHeader.Machine)"
-        }
-
-        if ([string]$reader.PEHeaders.PEHeader.Subsystem -ne 'WindowsCui') {
-            throw "PE 子系统不是 Console：$($reader.PEHeaders.PEHeader.Subsystem)"
-        }
-    }
-    finally {
-        $reader.Dispose()
-    }
-}
-finally {
-    $stream.Dispose()
-}
+Test-PeLayout $agentFile ([string]$manifest.pe_machine) ([string]$manifest.pe_subsystem)
 
 if ([bool]$manifest.require_authenticode_valid) {
     $signature = Get-AuthenticodeSignature -LiteralPath $agentFile
@@ -77,19 +233,14 @@ if ([bool]$manifest.require_authenticode_valid) {
     }
 
     $expectedLeafHash = ([string]$manifest.expected_leaf_certificate_sha256).Trim().ToLowerInvariant()
-    $actualLeafHash = [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData)
-    ).ToLowerInvariant()
+    $actualLeafHash = Get-Sha256HexFromBytes $signature.SignerCertificate.RawData
     if ($expectedLeafHash -notmatch '^[0-9a-f]{64}$' -or $actualLeafHash -cne $expectedLeafHash) {
         throw "p2p-agent.exe 签名证书 SHA-256 不匹配。expected=$expectedLeafHash actual=$actualLeafHash"
     }
 
     $expectedSpkiHash = ([string]$manifest.expected_spki_sha256).Trim().ToLowerInvariant()
-    $actualSpkiHash = [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData(
-            $signature.SignerCertificate.PublicKey.ExportSubjectPublicKeyInfo()
-        )
-    ).ToLowerInvariant()
+    [byte[]]$subjectPublicKeyInfo = Get-SubjectPublicKeyInfo $signature.SignerCertificate
+    $actualSpkiHash = Get-Sha256HexFromBytes $subjectPublicKeyInfo
     if ($expectedSpkiHash -notmatch '^[0-9a-f]{64}$' -or $actualSpkiHash -cne $expectedSpkiHash) {
         throw "p2p-agent.exe 签名公钥 SPKI SHA-256 不匹配。expected=$expectedSpkiHash actual=$actualSpkiHash"
     }

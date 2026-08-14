@@ -1,368 +1,506 @@
+#nullable disable warnings
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Win32;
 using ZhanClawControl.Infrastructure;
 using ZhanClawControl.Models;
 using ZhanClawControl.Services;
+using ZhanClawControl.Views.Dialogs;
 
 namespace ZhanClawControl.ViewModels;
 
-/// <summary>
-/// 首次安装向导，完整替代 02-install-worker.cmd。
-/// 三步：本机信息 → 授权主控 → 执行安装。
-/// </summary>
 public sealed class WizardViewModel : ObservableObject
 {
-    private readonly InstallerService _installer = new();
-    private readonly UiStateService _uiState = new();
+	private readonly InstallerService _installer = new InstallerService();
 
-    private int _step;
-    private string _agentName = Environment.MachineName + "-agent";
-    private string _agentTags = "agent";
-    private string _controllerPeerId = "";
-    private string _controllerNote = "";
-    private string _swarmKeyPath = "";
-    private bool _installing;
-    private bool _finished;
-    private bool _succeeded;
-    private string _runAsUser;
+	private readonly UiStateService _uiState = new UiStateService();
 
-    public WizardViewModel()
-    {
-        _runAsUser = App.InteractiveUserName;
-        NextCommand = new RelayCommand(Next, CanGoNext);
-        BackCommand = new RelayCommand(Back, () => Step > 0 && !Installing);
-        BrowseSwarmKeyCommand = new RelayCommand(BrowseSwarmKey);
-        PastePeerIdCommand = new RelayCommand(PastePeerId);
-        InstallCommand = new AsyncRelayCommand(InstallAsync, () => !Installing && !Finished);
-        FinishCommand = new RelayCommand(() => RequestClose?.Invoke(this, Succeeded));
-    }
+	private int _step;
 
-    public ObservableCollection<InstallStepDisplay> Steps { get; } = new();
+	private string _agentName = Environment.MachineName;
 
-    public RelayCommand NextCommand { get; }
-    public RelayCommand BackCommand { get; }
-    public RelayCommand BrowseSwarmKeyCommand { get; }
-    public RelayCommand PastePeerIdCommand { get; }
-    public AsyncRelayCommand InstallCommand { get; }
-    public RelayCommand FinishCommand { get; }
+	private string _agentTags = "worker";
 
-    /// <summary>参数二为 true 表示安装成功，主窗口应继续启动。</summary>
-    public event EventHandler<bool>? RequestClose;
+	private string _controllerPeerId = "";
 
-    public int Step
-    {
-        get => _step;
-        private set
-        {
-            if (SetProperty(ref _step, value))
-            {
-                OnPropertyChanged(nameof(IsStep0));
-                OnPropertyChanged(nameof(IsStep1));
-                OnPropertyChanged(nameof(IsStep2));
-                OnPropertyChanged(nameof(StepTitle));
-                OnPropertyChanged(nameof(StepCaption));
-                NextCommand.RaiseCanExecuteChanged();
-                BackCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	private string _controllerNote = "";
 
-    public bool IsStep0 => Step == 0;
-    public bool IsStep1 => Step == 1;
-    public bool IsStep2 => Step == 2;
+	private string _swarmKeyPath = "";
 
-    public string StepTitle => Step switch
-    {
-        0 => App.Localization.Text("WizardStepMachine"),
-        1 => App.Localization.Text("WizardStepAuthorization"),
-        _ => App.Localization.Text("WizardStepInstall")
-    };
+	private bool _installing;
 
-    public string StepCaption => Step switch
-    {
-        0 => App.Localization.Text("WizardCaptionMachine"),
-        1 => App.Localization.Text("WizardCaptionAuthorization"),
-        _ => App.Localization.Text("WizardCaptionInstall")
-    };
+	private bool _finished;
 
-    public string AgentName
-    {
-        get => _agentName;
-        set
-        {
-            if (SetProperty(ref _agentName, value))
-            {
-                NextCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	private bool _succeeded;
 
-    public string AgentTags
-    {
-        get => _agentTags;
-        set => SetProperty(ref _agentTags, value);
-    }
+	private bool _canRetry;
 
-    public string ControllerPeerId
-    {
-        get => _controllerPeerId;
-        set
-        {
-            if (SetProperty(ref _controllerPeerId, value))
-            {
-                OnPropertyChanged(nameof(PeerIdHint));
-                NextCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	private string _completionMessage = "";
 
-    public string ControllerNote
-    {
-        get => _controllerNote;
-        set => SetProperty(ref _controllerNote, value);
-    }
+	private string _runAsUser;
 
-    public string PeerIdHint
-    {
-        get
-        {
-            var value = ControllerPeerId.Trim();
-            if (value.Length == 0)
-            {
-                return App.Localization.Text("PeerHintEmpty");
-            }
+	public ObservableCollection<InstallStepDisplay> Steps { get; } = new ObservableCollection<InstallStepDisplay>();
 
-            if (value == "*")
-            {
-                return App.Localization.Text("PeerWildcardRejected");
-            }
+	public RelayCommand NextCommand { get; }
 
-            return AllowedPeerItem.LooksLikePeerId(value)
-                ? App.Localization.Text("AuthorizationPeerIdValid")
-                : App.Localization.Text("AuthorizationPeerIdSuspicious");
-        }
-    }
+	public RelayCommand BackCommand { get; }
 
-    public string SwarmKeyPath
-    {
-        get => _swarmKeyPath;
-        set
-        {
-            if (SetProperty(ref _swarmKeyPath, value))
-            {
-                OnPropertyChanged(nameof(SwarmKeyStatus));
-                NextCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	public RelayCommand BrowseSwarmKeyCommand { get; }
 
-    public bool HasEmbeddedSwarmKey => InstallerService.HasEmbeddedSwarmKey;
+	public RelayCommand PastePeerIdCommand { get; }
 
-    /// <summary>内置了 swarm.key 时不再让用户选择文件，只显示一行确认。</summary>
-    public bool NeedsSwarmKeySelection => !HasEmbeddedSwarmKey;
+	public AsyncRelayCommand InstallCommand { get; }
 
-    public string SwarmKeyStatus
-    {
-        get
-        {
-            if (HasEmbeddedSwarmKey)
-            {
-                return App.Localization.Text("WizardKeyEmbedded");
-            }
+	public RelayCommand RetryCommand { get; }
 
-            if (SwarmKeyPath.Trim().Length > 0)
-            {
-                return File.Exists(SwarmKeyPath)
-                    ? App.Localization.Text("WizardKeySelected")
-                    : App.Localization.Text("WizardKeyMissingFile");
-            }
+	public RelayCommand FinishCommand { get; }
 
-            if (File.Exists(AppPaths.SwarmKeyFile))
-            {
-                return App.Localization.Text("WizardKeyExisting");
-            }
+	public int Step
+	{
+		get
+		{
+			return _step;
+		}
+		private set
+		{
+			if (SetProperty(ref _step, value, "Step"))
+			{
+				OnPropertyChanged("IsStep0");
+				OnPropertyChanged("IsStep1");
+				OnPropertyChanged("IsStep2");
+				OnPropertyChanged("ShowInstallButton");
+				OnPropertyChanged("StepTitle");
+				OnPropertyChanged("StepCaption");
+				NextCommand.RaiseCanExecuteChanged();
+				BackCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-            return App.Localization.Text("WizardKeyRequired");
-        }
-    }
+	public bool IsStep0 => Step == 0;
 
-    public bool SwarmKeyReady =>
-        HasEmbeddedSwarmKey ||
-        (SwarmKeyPath.Trim().Length > 0 && File.Exists(SwarmKeyPath)) ||
-        File.Exists(AppPaths.SwarmKeyFile);
+	public bool IsStep1 => Step == 1;
 
-    public string RunAsUser
-    {
-        get => _runAsUser;
-        set
-        {
-            if (SetProperty(ref _runAsUser, value)) NextCommand.RaiseCanExecuteChanged();
-        }
-    }
+	public bool IsStep2 => Step == 2;
 
-    public bool HardenAcl => true;
+	public bool ShowInstallButton
+	{
+		get
+		{
+			if (IsStep2)
+			{
+				return !Finished;
+			}
+			return false;
+		}
+	}
 
-    public bool Installing
-    {
-        get => _installing;
-        private set
-        {
-            if (SetProperty(ref _installing, value))
-            {
-                InstallCommand.RaiseCanExecuteChanged();
-                BackCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	public string StepTitle => Step switch
+	{
+		0 => App.Localization.Text("WizardStepMachine"), 
+		1 => App.Localization.Text("WizardStepAuthorization"), 
+		_ => App.Localization.Text("WizardStepInstall"), 
+	};
 
-    public bool Finished
-    {
-        get => _finished;
-        private set
-        {
-            if (SetProperty(ref _finished, value))
-            {
-                InstallCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
+	public string StepCaption => Step switch
+	{
+		0 => App.Localization.Text("WizardCaptionMachine"), 
+		1 => App.Localization.Text("WizardCaptionAuthorization"), 
+		_ => App.Localization.Text("WizardCaptionInstall"), 
+	};
 
-    public bool Succeeded
-    {
-        get => _succeeded;
-        private set => SetProperty(ref _succeeded, value);
-    }
+	public string AgentName
+	{
+		get
+		{
+			return _agentName;
+		}
+		set
+		{
+			if (SetProperty(ref _agentName, value, "AgentName"))
+			{
+				NextCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-    private bool CanGoNext()
-    {
-        if (Installing)
-        {
-            return false;
-        }
+	public string AgentTags
+	{
+		get
+		{
+			return _agentTags;
+		}
+		set
+		{
+			SetProperty(ref _agentTags, value, "AgentTags");
+		}
+	}
 
-        return Step switch
-        {
-            0 => AgentName.Trim().Length is > 0 and <= 128 &&
-                 !AgentName.Any(char.IsControl) &&
-                 RunAsUser.Trim().Length > 0 && SwarmKeyReady,
-            1 => ControllerPeerId.Trim().Length == 0 ||
-                 AgentConfigService.IsValidPeerId(ControllerPeerId.Trim()),
-            _ => false
-        };
-    }
+	public string ControllerPeerId
+	{
+		get
+		{
+			return _controllerPeerId;
+		}
+		set
+		{
+			if (SetProperty(ref _controllerPeerId, value, "ControllerPeerId"))
+			{
+				OnPropertyChanged("PeerIdHint");
+				NextCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-    private void Next()
-    {
-        if (Step == 1 && ControllerPeerId.Trim().Length > 0 &&
-            !AgentConfigService.IsValidPeerId(ControllerPeerId.Trim()))
-        {
-            MessageBox.Show(
-                App.Localization.Text("AuthorizationPeerIdSuspicious"),
-                App.Localization.Text("AuthorizationTitle"),
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
+	public string ControllerNote
+	{
+		get
+		{
+			return _controllerNote;
+		}
+		set
+		{
+			SetProperty(ref _controllerNote, value, "ControllerNote");
+		}
+	}
 
-        Step = Math.Min(2, Step + 1);
-    }
+	public string PeerIdHint
+	{
+		get
+		{
+			string text = ControllerPeerId.Trim();
+			if (text.Length == 0)
+			{
+				return App.Localization.Text("PeerHintEmpty");
+			}
+			if (text == "*")
+			{
+				return App.Localization.Text("PeerWildcardRejected");
+			}
+			if (!AllowedPeerItem.LooksLikePeerId(text))
+			{
+				return App.Localization.Text("AuthorizationPeerIdSuspicious");
+			}
+			return App.Localization.Text("AuthorizationPeerIdValid");
+		}
+	}
 
-    private void Back() => Step = Math.Max(0, Step - 1);
+	public string SwarmKeyPath
+	{
+		get
+		{
+			return _swarmKeyPath;
+		}
+		set
+		{
+			if (SetProperty(ref _swarmKeyPath, value, "SwarmKeyPath"))
+			{
+				OnPropertyChanged("SwarmKeyStatus");
+				NextCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-    private void BrowseSwarmKey()
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = App.Localization.Text("WizardPrivateNetworkKey"),
-            Filter = App.Localization.Text("FileFilterSwarmKey"),
-            CheckFileExists = true
-        };
+	public bool HasEmbeddedSwarmKey => InstallerService.HasEmbeddedSwarmKey;
 
-        if (dialog.ShowDialog() == true)
-        {
-            SwarmKeyPath = dialog.FileName;
-        }
-    }
+	public bool NeedsSwarmKeySelection => !HasEmbeddedSwarmKey;
 
-    private void PastePeerId()
-    {
-        try
-        {
-            if (Clipboard.ContainsText())
-            {
-                ControllerPeerId = Clipboard.GetText().Trim();
-            }
-        }
-        catch
-        {
-            // 剪贴板被占用
-        }
-    }
+	public string SwarmKeyStatus
+	{
+		get
+		{
+			if (HasEmbeddedSwarmKey)
+			{
+				return App.Localization.Text("WizardKeyEmbedded");
+			}
+			if (SwarmKeyPath.Trim().Length > 0)
+			{
+				if (!File.Exists(SwarmKeyPath))
+				{
+					return App.Localization.Text("WizardKeyMissingFile");
+				}
+				return App.Localization.Text("WizardKeySelected");
+			}
+			if (File.Exists(AppPaths.SwarmKeyFile))
+			{
+				return App.Localization.Text("WizardKeyExisting");
+			}
+			return App.Localization.Text("WizardKeyRequired");
+		}
+	}
 
-    private async Task InstallAsync()
-    {
-        Installing = true;
-        Steps.Clear();
+	public bool SwarmKeyReady
+	{
+		get
+		{
+			if (!HasEmbeddedSwarmKey && (SwarmKeyPath.Trim().Length <= 0 || !File.Exists(SwarmKeyPath)))
+			{
+				return File.Exists(AppPaths.SwarmKeyFile);
+			}
+			return true;
+		}
+	}
 
-        try
-        {
-            var allowedPeers = new List<string>();
-            var peerId = ControllerPeerId.Trim();
-            if (peerId.Length > 0 && peerId != "*")
-            {
-                allowedPeers.Add(peerId);
-            }
+	public string RunAsUser
+	{
+		get
+		{
+			return _runAsUser;
+		}
+		set
+		{
+			if (SetProperty(ref _runAsUser, value, "RunAsUser"))
+			{
+				NextCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-            var options = new InstallOptions(
-                AgentName.Trim(),
-                SettingsViewModel.SplitList(AgentTags, ','),
-                allowedPeers,
-                AppPaths.DefaultBootstrapAddrs,
-                AppPaths.DefaultRendezvousGroup,
-                AppPaths.DefaultMaxParallelTasks,
-                AppPaths.DefaultMaxTransferBytes,
-                RunAsUser.Trim(),
-                !HasEmbeddedSwarmKey && SwarmKeyPath.Trim().Length > 0 ? SwarmKeyPath.Trim() : null,
-                true);
+	public bool HardenAcl => true;
 
-            var progress = new Progress<InstallStep>(step => Steps.Add(InstallStepPresenter.Present(step)));
-            var result = await _installer.InstallAsync(options, progress).ConfigureAwait(true);
+	public bool Installing
+	{
+		get
+		{
+			return _installing;
+		}
+		private set
+		{
+			if (SetProperty(ref _installing, value, "Installing"))
+			{
+				InstallCommand.RaiseCanExecuteChanged();
+				BackCommand.RaiseCanExecuteChanged();
+			}
+		}
+	}
 
-            Succeeded = result.Count > 0 &&
-                        result.All(s => s.Success) &&
-                        result.Any(s => s.Success &&
-                            string.Equals(s.Title, "启动并验证 Agent", StringComparison.Ordinal));
+	public bool Finished
+	{
+		get
+		{
+			return _finished;
+		}
+		private set
+		{
+			if (SetProperty(ref _finished, value, "Finished"))
+			{
+				InstallCommand.RaiseCanExecuteChanged();
+				NextCommand.RaiseCanExecuteChanged();
+				BackCommand.RaiseCanExecuteChanged();
+				OnPropertyChanged("ShowInstallButton");
+				OnPropertyChanged("ShowRetryButton");
+			}
+		}
+	}
 
-            if (Succeeded)
-            {
-                var state = _uiState.Load();
-                if (peerId.Length > 0 && ControllerNote.Trim().Length > 0)
-                    state.PeerNotes[peerId] = ControllerNote.Trim();
-                state.EffectiveAllowedPeers = allowedPeers.ToList();
-                state.EffectiveAllowedPeersKnown = true;
-                state.AuthorizationPendingRestart = false;
-                state.ConfigurationPendingRestart = false;
-                if (!_uiState.Save(state, out var noteError))
-                {
-                    MessageBox.Show(
-                        App.Localization.Format("DialogWizardStateSaveFailed", noteError ?? App.Localization.Text("CommonUnknown")),
-                        App.Localization.Text("ProductName"),
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Steps.Add(InstallStepPresenter.Present(new InstallStep("安装中断", false, ex.Message)));
-            Succeeded = false;
-        }
-        finally
-        {
-            Installing = false;
-            Finished = true;
-        }
-    }
+	public bool Succeeded
+	{
+		get
+		{
+			return _succeeded;
+		}
+		private set
+		{
+			SetProperty(ref _succeeded, value, "Succeeded");
+		}
+	}
+
+	public bool CanRetry
+	{
+		get
+		{
+			return _canRetry;
+		}
+		private set
+		{
+			if (SetProperty(ref _canRetry, value, "CanRetry"))
+			{
+				RetryCommand.RaiseCanExecuteChanged();
+				OnPropertyChanged("ShowRetryButton");
+			}
+		}
+	}
+
+	public bool ShowRetryButton
+	{
+		get
+		{
+			if (Finished && !Succeeded)
+			{
+				return CanRetry;
+			}
+			return false;
+		}
+	}
+
+	public string CompletionMessage
+	{
+		get
+		{
+			return _completionMessage;
+		}
+		private set
+		{
+			SetProperty(ref _completionMessage, value, "CompletionMessage");
+		}
+	}
+
+	public event EventHandler<bool>? RequestClose;
+
+	public WizardViewModel()
+	{
+		_runAsUser = App.InteractiveUserName;
+		NextCommand = new RelayCommand(Next, CanGoNext);
+		BackCommand = new RelayCommand(Back, () => Step > 0 && !Installing && !Finished);
+		BrowseSwarmKeyCommand = new RelayCommand(BrowseSwarmKey);
+		PastePeerIdCommand = new RelayCommand(PastePeerId);
+		InstallCommand = new AsyncRelayCommand(InstallAsync, () => !Installing && !Finished);
+		RetryCommand = new RelayCommand(PrepareRetry, () => CanRetry && !Installing);
+		FinishCommand = new RelayCommand((Action)delegate
+		{
+			this.RequestClose?.Invoke(this, Succeeded);
+		}, (Func<bool>?)null);
+	}
+
+	private bool CanGoNext()
+	{
+		if (Installing || Finished)
+		{
+			return false;
+		}
+		switch (Step)
+		{
+		case 0:
+		{
+			int length = AgentName.Trim().Length;
+			return length > 0 && length <= 128 && !AgentName.Any(char.IsControl) && RunAsUser.Trim().Length > 0 && SwarmKeyReady;
+		}
+		case 1:
+			return ControllerPeerId.Trim().Length == 0 || AgentConfigService.IsValidPeerId(ControllerPeerId.Trim());
+		default:
+			return false;
+		}
+	}
+
+	private void Next()
+	{
+		//IL_004f: Unknown result type (might be due to invalid IL or missing references)
+		if (Step == 1 && ControllerPeerId.Trim().Length > 0 && !AgentConfigService.IsValidPeerId(ControllerPeerId.Trim()))
+		{
+			AppDialog.Show(App.Localization.Text("AuthorizationPeerIdSuspicious"), App.Localization.Text("AuthorizationTitle"), (MessageBoxButton)0, (MessageBoxImage)48);
+		}
+		else
+		{
+			Step = Math.Min(2, Step + 1);
+		}
+	}
+
+	private void Back()
+	{
+		Step = Math.Max(0, Step - 1);
+	}
+
+	private void PrepareRetry()
+	{
+		if (CanRetry && !Installing)
+		{
+			Finished = false;
+			CanRetry = false;
+			CompletionMessage = "";
+			Step = 0;
+		}
+	}
+
+	private void BrowseSwarmKey()
+	{
+		//IL_0000: Unknown result type (might be due to invalid IL or missing references)
+		//IL_0005: Unknown result type (might be due to invalid IL or missing references)
+		//IL_001a: Unknown result type (might be due to invalid IL or missing references)
+		//IL_002f: Unknown result type (might be due to invalid IL or missing references)
+		//IL_0037: Expected O, but got Unknown
+		OpenFileDialog val = new OpenFileDialog
+		{
+			Title = App.Localization.Text("WizardPrivateNetworkKey"),
+			Filter = App.Localization.Text("FileFilterSwarmKey"),
+			CheckFileExists = true
+		};
+		if (AppDialog.ShowFileDialog((CommonDialog)(object)val) == true)
+		{
+			SwarmKeyPath = ((FileDialog)val).FileName;
+		}
+	}
+
+	private void PastePeerId()
+	{
+		try
+		{
+			if (Clipboard.ContainsText())
+			{
+				ControllerPeerId = Clipboard.GetText().Trim();
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private async Task InstallAsync()
+	{
+		Installing = true;
+		Steps.Clear();
+		try
+		{
+			List<string> allowedPeers = new List<string>();
+			string peerId = ControllerPeerId.Trim();
+			if (peerId.Length > 0 && peerId != "*")
+			{
+				allowedPeers.Add(peerId);
+			}
+			InstallOptions options = new InstallOptions(AgentName.Trim(), SettingsViewModel.SplitList(AgentTags, ','), allowedPeers, AppPaths.DefaultBootstrapAddrs, "p2p-agents", 4, 8589934592L, RunAsUser.Trim(), (!HasEmbeddedSwarmKey && SwarmKeyPath.Trim().Length > 0) ? SwarmKeyPath.Trim() : null, HardenAcl: true);
+			Progress<InstallStep> progress = new Progress<InstallStep>(delegate(InstallStep step)
+			{
+				Steps.Add(InstallStepPresenter.Present(step));
+			});
+			IReadOnlyList<InstallStep> source = await _installer.InstallAsync(options, progress).ConfigureAwait(continueOnCapturedContext: true);
+			Succeeded = source.Any((InstallStep step) => step.Success && step.Kind == InstallStepKind.InstallationVerified);
+			bool flag = source.Any((InstallStep step) => step.Kind == InstallStepKind.RollbackFailed);
+			bool flag2 = source.Any((InstallStep step) => step.Success && step.Kind == InstallStepKind.RollbackSucceeded);
+			bool flag3 = source.Any((InstallStep step) => step.Kind == InstallStepKind.NoMutationFailure);
+			CanRetry = !Succeeded && !flag && (flag3 || flag2);
+			CompletionMessage = ((!Succeeded) ? (flag ? App.Localization.Text("WizardInstallRollbackFailed") : App.Localization.Text("WizardInstallRetryAvailable")) : (source.Any((InstallStep step) => step.Kind == InstallStepKind.CleanupWarning) ? App.Localization.Text("WizardInstalledCleanupWarning") : App.Localization.Text("WizardInstalledSuccess")));
+			if (Succeeded)
+			{
+				UiState uiState = _uiState.Load();
+				if (peerId.Length > 0 && ControllerNote.Trim().Length > 0)
+				{
+					uiState.PeerNotes[peerId] = ControllerNote.Trim();
+				}
+				uiState.EffectiveAllowedPeers = allowedPeers.ToList();
+				uiState.EffectiveAllowedPeersKnown = true;
+				uiState.AuthorizationPendingRestart = false;
+				uiState.ConfigurationPendingRestart = false;
+				if (!_uiState.Save(uiState, out string error))
+				{
+					AppDialog.Show(App.Localization.Format("DialogWizardStateSaveFailed", error ?? App.Localization.Text("CommonUnknown")), App.Localization.Text("ProductName"), (MessageBoxButton)0, (MessageBoxImage)48);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Steps.Add(InstallStepPresenter.Present(new InstallStep("安装中断", Success: false, ex.Message)));
+			Succeeded = false;
+			CanRetry = true;
+			CompletionMessage = App.Localization.Text("WizardInstallRetryAvailable");
+		}
+		finally
+		{
+			Installing = false;
+			Finished = true;
+		}
+	}
 }

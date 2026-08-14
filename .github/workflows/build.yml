@@ -33,10 +33,18 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Verify payload files
+      - name: Verify payload files (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          ./scripts/Test-Payload.ps1 -RequireSwarmKey
+
+      - name: Verify payload files (PowerShell 7)
         shell: pwsh
         run: |
           ./scripts/Test-Payload.ps1 -RequireSwarmKey
+
+      - name: Verify source, localization, bindings, and dialogs
+        run: python scripts/verify_source.py
 
       - name: Restore
         run: dotnet restore src/ZhanClawControl/ZhanClawControl.csproj

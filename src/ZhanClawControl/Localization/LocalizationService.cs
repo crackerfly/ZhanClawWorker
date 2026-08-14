@@ -1,147 +1,158 @@
+#nullable disable warnings
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 using System.Windows;
+using ZhanClawControl.Models;
 using ZhanClawControl.Services;
 
 namespace ZhanClawControl.Localization;
 
-public sealed record LanguageOption(string Code, string DisplayName);
-
-/// <summary>
-/// Small, dependency-free runtime localizer. Strings are published as application
-/// resources so DynamicResource bindings update without recreating a window.
-/// </summary>
 public sealed class LocalizationService
 {
-    public const string Auto = "Auto";
-    public const string SimplifiedChinese = "zh-CN";
-    public const string TraditionalChinese = "zh-TW";
-    public const string English = "en-US";
+	public const string Auto = "Auto";
 
-    private static readonly HashSet<string> Supported = new(StringComparer.OrdinalIgnoreCase)
-    {
-        Auto, SimplifiedChinese, TraditionalChinese, English
-    };
+	public const string SimplifiedChinese = "zh-CN";
 
-    private readonly UiStateService _state = new();
-    private CultureInfo _systemCulture = CultureInfo.CurrentUICulture;
+	public const string TraditionalChinese = "zh-TW";
 
-    public string SelectedLanguage { get; private set; } = Auto;
-    public string EffectiveLanguage { get; private set; } = SimplifiedChinese;
-    public string SystemCultureName => ResolveSystemLanguage(_systemCulture);
+	public const string English = "en-US";
 
-    public event EventHandler? LanguageChanged;
+	private static readonly HashSet<string> Supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Auto", "zh-CN", "zh-TW", "en-US" };
 
-    public IReadOnlyList<LanguageOption> GetOptions() =>
-    [
-        new(Auto, Text("LanguageAuto")),
-        new(SimplifiedChinese, "简体中文"),
-        new(TraditionalChinese, "繁體中文"),
-        new(English, "English")
-    ];
+	private readonly UiStateService _state = new UiStateService();
 
-    public void Initialize(string? interactiveUserCultureName = null)
-    {
-        if (!string.IsNullOrWhiteSpace(interactiveUserCultureName))
-        {
-            try { _systemCulture = CultureInfo.GetCultureInfo(interactiveUserCultureName); }
-            catch (CultureNotFoundException) { _systemCulture = CultureInfo.CurrentUICulture; }
-        }
-        var saved = _state.Load().Language;
-        SetLanguage(IsSupported(saved) ? saved : Auto, persist: false, force: true);
-    }
+	private CultureInfo _systemCulture = CultureInfo.CurrentUICulture;
 
-    public bool SetLanguage(string? language, bool persist = true, bool force = false)
-    {
-        var selected = IsSupported(language) ? language! : Auto;
-        var effective = selected.Equals(Auto, StringComparison.OrdinalIgnoreCase)
-            ? ResolveSystemLanguage(_systemCulture)
-            : Normalize(selected);
+	public string SelectedLanguage { get; private set; } = "Auto";
 
-        if (!force &&
-            selected.Equals(SelectedLanguage, StringComparison.OrdinalIgnoreCase) &&
-            effective.Equals(EffectiveLanguage, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
+	public string EffectiveLanguage { get; private set; } = "zh-CN";
 
-        var strings = Strings.For(effective);
-        foreach (var pair in strings)
-        {
-            Application.Current.Resources[pair.Key] = pair.Value;
-        }
+	public string SystemCultureName => ResolveSystemLanguage(_systemCulture);
 
-        SelectedLanguage = selected;
-        EffectiveLanguage = effective;
+	public event EventHandler? LanguageChanged;
 
-        // UI strings and formatting must switch as one unit. Setting only the
-        // default UI culture leaves the dispatcher thread (and Format()) on the
-        // previous number/date culture until the next process launch.
-        var culture = CultureInfo.GetCultureInfo(effective);
-        CultureInfo.DefaultThreadCurrentCulture = culture;
-        CultureInfo.DefaultThreadCurrentUICulture = culture;
-        Thread.CurrentThread.CurrentCulture = culture;
-        Thread.CurrentThread.CurrentUICulture = culture;
+	public IReadOnlyList<LanguageOption> GetOptions()
+	{
+		return new _003C_003Ez__ReadOnlyArray<LanguageOption>(new LanguageOption[4]
+		{
+			new LanguageOption("Auto", Text("LanguageAuto")),
+			new LanguageOption("zh-CN", "简体中文"),
+			new LanguageOption("zh-TW", "繁體中文"),
+			new LanguageOption("en-US", "English")
+		});
+	}
 
-        if (persist)
-        {
-            var state = _state.Load();
-            state.Language = selected;
-            if (!_state.Save(state))
-            {
-                LanguageChanged?.Invoke(this, EventArgs.Empty);
-                return false;
-            }
-        }
+	public void Initialize(string? interactiveUserCultureName = null)
+	{
+		if (!string.IsNullOrWhiteSpace(interactiveUserCultureName))
+		{
+			try
+			{
+				_systemCulture = CultureInfo.GetCultureInfo(interactiveUserCultureName);
+			}
+			catch (CultureNotFoundException)
+			{
+				_systemCulture = CultureInfo.CurrentUICulture;
+			}
+		}
+		string language = _state.Load().Language;
+		SetLanguage(IsSupported(language) ? language : "Auto", persist: false, force: true);
+	}
 
-        LanguageChanged?.Invoke(this, EventArgs.Empty);
-        return true;
-    }
+	public bool SetLanguage(string? language, bool persist = true, bool force = false)
+	{
+		string text = (IsSupported(language) ? language : "Auto");
+		string text2 = (text.Equals("Auto", StringComparison.OrdinalIgnoreCase) ? ResolveSystemLanguage(_systemCulture) : Normalize(text));
+		if (!force && text.Equals(SelectedLanguage, StringComparison.OrdinalIgnoreCase) && text2.Equals(EffectiveLanguage, StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+		foreach (KeyValuePair<string, string> item in Strings.For(text2))
+		{
+			Application.Current.Resources[(object)item.Key] = item.Value;
+		}
+		SelectedLanguage = text;
+		EffectiveLanguage = text2;
+		CultureInfo cultureInfo = (CultureInfo.DefaultThreadCurrentUICulture = (CultureInfo.DefaultThreadCurrentCulture = CultureInfo.GetCultureInfo(text2)));
+		Thread.CurrentThread.CurrentCulture = cultureInfo;
+		Thread.CurrentThread.CurrentUICulture = cultureInfo;
+		if (persist)
+		{
+			UiState uiState = _state.Load();
+			uiState.Language = text;
+			if (!_state.Save(uiState))
+			{
+				this.LanguageChanged?.Invoke(this, EventArgs.Empty);
+				return false;
+			}
+		}
+		this.LanguageChanged?.Invoke(this, EventArgs.Empty);
+		return true;
+	}
 
-    public void RefreshSystemLanguage()
-    {
-        if (SelectedLanguage.Equals(Auto, StringComparison.OrdinalIgnoreCase))
-        {
-            SetLanguage(Auto, persist: false, force: true);
-        }
-    }
+	public void RefreshSystemLanguage()
+	{
+		if (SelectedLanguage.Equals("Auto", StringComparison.OrdinalIgnoreCase))
+		{
+			SetLanguage("Auto", persist: false, force: true);
+		}
+	}
 
-    public string Text(string key)
-    {
-        if (Application.Current?.TryFindResource(key) is string value)
-        {
-            return value;
-        }
+	public string Text(string key)
+	{
+		Application current = Application.Current;
+		if (((current != null) ? current.TryFindResource((object)key) : null) is string result)
+		{
+			return result;
+		}
+		if (!Strings.For((EffectiveLanguage.Length == 0) ? "zh-CN" : EffectiveLanguage).TryGetValue(key, out string value))
+		{
+			return key;
+		}
+		return value;
+	}
 
-        var effective = EffectiveLanguage.Length == 0 ? SimplifiedChinese : EffectiveLanguage;
-        return Strings.For(effective).TryGetValue(key, out var fallback) ? fallback : key;
-    }
+	public string Format(string key, params object?[] args)
+	{
+		return string.Format(CultureInfo.CurrentCulture, Text(key), args);
+	}
 
-    public string Format(string key, params object?[] args) =>
-        string.Format(CultureInfo.CurrentCulture, Text(key), args);
+	private static bool IsSupported(string? language)
+	{
+		if (!string.IsNullOrWhiteSpace(language))
+		{
+			return Supported.Contains(language);
+		}
+		return false;
+	}
 
-    private static bool IsSupported(string? language) =>
-        !string.IsNullOrWhiteSpace(language) && Supported.Contains(language);
+	private static string Normalize(string language)
+	{
+		string text = language.ToLowerInvariant();
+		if (!(text == "zh-tw"))
+		{
+			if (text == "en-us")
+			{
+				return "en-US";
+			}
+			return "zh-CN";
+		}
+		return "zh-TW";
+	}
 
-    private static string Normalize(string language) => language.ToLowerInvariant() switch
-    {
-        "zh-tw" => TraditionalChinese,
-        "en-us" => English,
-        _ => SimplifiedChinese
-    };
-
-    private static string ResolveSystemLanguage(CultureInfo culture)
-    {
-        var name = culture.Name;
-        if (name.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
-        {
-            return name.Contains("Hant", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith("-TW", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith("-HK", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith("-MO", StringComparison.OrdinalIgnoreCase)
-                ? TraditionalChinese
-                : SimplifiedChinese;
-        }
-
-        return English;
-    }
+	private static string ResolveSystemLanguage(CultureInfo culture)
+	{
+		string name = culture.Name;
+		if (name.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
+		{
+			if (!name.Contains("Hant", StringComparison.OrdinalIgnoreCase) && !name.EndsWith("-TW", StringComparison.OrdinalIgnoreCase) && !name.EndsWith("-HK", StringComparison.OrdinalIgnoreCase) && !name.EndsWith("-MO", StringComparison.OrdinalIgnoreCase))
+			{
+				return "zh-CN";
+			}
+			return "zh-TW";
+		}
+		return "en-US";
+	}
 }

@@ -1,6 +1,8 @@
+#nullable disable warnings
+using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Windows.Media;
+using System.Threading.Tasks;
 using System.Windows.Threading;
 using ZhanClawControl.Infrastructure;
 using ZhanClawControl.Services;
@@ -8,191 +10,219 @@ using ZhanClawControl.Views;
 
 namespace ZhanClawControl.ViewModels;
 
-public sealed class NavItem : ObservableObject
-{
-    public NavItem(string resourceKey, Geometry primary, Geometry secondary, object page)
-    {
-        ResourceKey = resourceKey;
-        Primary = primary;
-        Secondary = secondary;
-        Page = page;
-    }
-
-    public string ResourceKey { get; }
-    public string Title => App.Localization.Text(ResourceKey);
-    public Geometry Primary { get; }
-    public Geometry Secondary { get; }
-    public object Page { get; }
-    public void RefreshLanguage() => OnPropertyChanged(nameof(Title));
-}
-
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
-    private readonly ControlApiClient _api = new();
-    private readonly DispatcherTimer _timer;
-    private NavItem? _selectedNav;
-    private bool _refreshing;
-    private bool _disposed;
+	private readonly ControlApiClient _api = new ControlApiClient();
 
-    public MainViewModel()
-    {
-        Status = new StatusViewModel(_api);
-        Authorization = new AuthorizationViewModel(_api);
-        Audit = new AuditViewModel();
-        Settings = new SettingsViewModel();
-        NavItems = new ObservableCollection<NavItem>
-        {
-            new("NavStatus", PhosphorIcons.House, PhosphorIcons.HouseSecondary, Status),
-            new("NavAuthorization", PhosphorIcons.ShieldCheck, PhosphorIcons.ShieldCheckSecondary, Authorization),
-            new("NavAudit", PhosphorIcons.ListChecks, PhosphorIcons.ListChecksSecondary, Audit),
-            new("NavSettings", PhosphorIcons.Gear, PhosphorIcons.GearSecondary, Settings)
-        };
-        _selectedNav = NavItems[0];
+	private readonly DispatcherTimer _timer;
 
-        Authorization.AuthorizationChanged += OnAuthorizationChanged;
-        Status.RuntimeRestartVerified += OnRuntimeRestartVerified;
-        Status.PropertyChanged += OnStatusPropertyChanged;
-        Settings.RuntimeRestartVerified += OnRuntimeRestartVerified;
-        App.Localization.LanguageChanged += OnLanguageChanged;
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        _timer.Tick += OnTimerTick;
-    }
+	private NavItem? _selectedNav;
 
-    public ObservableCollection<NavItem> NavItems { get; }
-    public StatusViewModel Status { get; }
-    public AuthorizationViewModel Authorization { get; }
-    public AuditViewModel Audit { get; }
-    public SettingsViewModel Settings { get; }
+	private bool _refreshing;
 
-    public NavItem? SelectedNav
-    {
-        get => _selectedNav;
-        set
-        {
-            if (!SetProperty(ref _selectedNav, value)) return;
-            OnPropertyChanged(nameof(CurrentPage));
-            if (value?.Page == Audit) RefreshAudit();
-        }
-    }
+	private bool _disposed;
 
-    public object? CurrentPage => SelectedNav?.Page;
-    public string WindowTitle => App.Localization.Text("ProductName");
-    public string TrayBackgroundStatus => App.Localization.Format("TrayBackgroundStatus", Status.RunningText);
-    public bool HasUnsavedAuthorizationChanges => Authorization.HasUnsavedChanges;
+	public ObservableCollection<NavItem> NavItems { get; }
 
-    public async Task InitializeAsync()
-    {
-        Authorization.Load();
-        Status.InitializeEffectiveAuthorization(
-            Authorization.EffectivePeerIds,
-            Authorization.EffectiveStateKnown);
-        await Settings.LoadAsync().ConfigureAwait(true);
-        SyncConfiguredAuthorization();
-        await Status.CheckDeploymentAsync().ConfigureAwait(true);
-        await RefreshAsync().ConfigureAwait(true);
-        _timer.Start();
-    }
+	public StatusViewModel Status { get; }
 
-    public async Task RefreshAsync()
-    {
-        if (_refreshing || _disposed) return;
-        _refreshing = true;
-        try
-        {
-            await Status.RefreshAsync().ConfigureAwait(true);
-            await Authorization.RefreshOnlineStateAsync().ConfigureAwait(true);
-            SyncConfiguredAuthorization();
-        }
-        catch (OperationCanceledException)
-        {
-            // Shutdown can cancel an in-flight refresh.
-        }
-        catch
-        {
-            // Page-level state represents polling failures; keep the dispatcher alive.
-        }
-        finally
-        {
-            _refreshing = false;
-        }
-    }
+	public AuthorizationViewModel Authorization { get; }
 
-    private async void OnTimerTick(object? sender, EventArgs e)
-    {
-        try { await RefreshAsync().ConfigureAwait(true); }
-        catch { /* RefreshAsync already maps expected failures. */ }
-    }
+	public AuditViewModel Audit { get; }
 
-    private async void RefreshAudit()
-    {
-        try { await Audit.RefreshAsync().ConfigureAwait(true); }
-        catch { /* The audit page shows its own read status. */ }
-    }
+	public SettingsViewModel Settings { get; }
 
-    private void OnAuthorizationChanged(object? sender, AuthorizationChangedEventArgs e)
-    {
-        SyncConfiguredAuthorization();
-        if (e.RuntimeVerified)
-        {
-            Status.MarkAuthorizationEffective(Authorization.ConfiguredPeerIds);
-            Settings.MarkRuntimeApplied();
-        }
-    }
+	public NavItem? SelectedNav
+	{
+		get
+		{
+			return _selectedNav;
+		}
+		set
+		{
+			if (SetProperty(ref _selectedNav, value, "SelectedNav"))
+			{
+				OnPropertyChanged("CurrentPage");
+				if (value?.Page == Audit)
+				{
+					RefreshAudit();
+				}
+			}
+		}
+	}
 
-    private void OnRuntimeRestartVerified(object? sender, EventArgs e)
-    {
-        if (Authorization.PendingRestart || !Authorization.EffectiveStateKnown)
-        {
-            Authorization.MarkRuntimeApplied();
-            Status.MarkAuthorizationEffective(Authorization.ConfiguredPeerIds);
-        }
-        Settings.MarkRuntimeApplied();
-    }
+	public object? CurrentPage => SelectedNav?.Page;
 
-    private void SyncConfiguredAuthorization() =>
-        Status.SetConfiguredAuthorization(
-            Authorization.ConfiguredPeerIds,
-            Authorization.PendingRestart);
+	public string WindowTitle => App.Localization.Text("ProductName");
 
-    private void OnLanguageChanged(object? sender, EventArgs e)
-    {
-        foreach (var item in NavItems) item.RefreshLanguage();
-        Status.RefreshLanguage();
-        Authorization.RefreshLanguage();
-        Audit.RefreshLanguage();
-        Settings.RefreshLanguage();
-        OnPropertyChanged(nameof(WindowTitle));
-        OnPropertyChanged(nameof(TrayBackgroundStatus));
-        RefreshLocalizedState();
-    }
+	public string TrayBackgroundStatus => App.Localization.Format("TrayBackgroundStatus", Status.RunningText);
 
-    private async void RefreshLocalizedState()
-    {
-        try
-        {
-            await RefreshAsync().ConfigureAwait(true);
-            if (SelectedNav?.Page == Audit) await Audit.RefreshAsync().ConfigureAwait(true);
-        }
-        catch { /* Language switching must not terminate the dispatcher. */ }
-    }
+	public bool HasUnsavedAuthorizationChanges => Authorization.HasUnsavedChanges;
 
-    private void OnStatusPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(StatusViewModel.RunningText))
-            OnPropertyChanged(nameof(TrayBackgroundStatus));
-    }
+	public MainViewModel()
+	{
+		//IL_0159: Unknown result type (might be due to invalid IL or missing references)
+		//IL_015e: Unknown result type (might be due to invalid IL or missing references)
+		//IL_0177: Expected O, but got Unknown
+		Status = new StatusViewModel(_api);
+		Authorization = new AuthorizationViewModel(_api);
+		Audit = new AuditViewModel();
+		Settings = new SettingsViewModel();
+		NavItems = new ObservableCollection<NavItem>
+		{
+			new NavItem("NavStatus", PhosphorIcons.House, PhosphorIcons.HouseSecondary, Status),
+			new NavItem("NavAuthorization", PhosphorIcons.ShieldCheck, PhosphorIcons.ShieldCheckSecondary, Authorization),
+			new NavItem("NavAudit", PhosphorIcons.ListChecks, PhosphorIcons.ListChecksSecondary, Audit),
+			new NavItem("NavSettings", PhosphorIcons.Gear, PhosphorIcons.GearSecondary, Settings)
+		};
+		_selectedNav = NavItems[0];
+		Authorization.AuthorizationChanged += OnAuthorizationChanged;
+		Status.RuntimeRestartVerified += OnRuntimeRestartVerified;
+		Status.PropertyChanged += OnStatusPropertyChanged;
+		Settings.RuntimeRestartVerified += OnRuntimeRestartVerified;
+		App.Localization.LanguageChanged += OnLanguageChanged;
+		_timer = new DispatcherTimer
+		{
+			Interval = TimeSpan.FromSeconds(5.0)
+		};
+		_timer.Tick += OnTimerTick;
+	}
 
-    public void Dispose()
-    {
-        if (_disposed) return;
-        _disposed = true;
-        _timer.Stop();
-        _timer.Tick -= OnTimerTick;
-        Authorization.AuthorizationChanged -= OnAuthorizationChanged;
-        Status.RuntimeRestartVerified -= OnRuntimeRestartVerified;
-        Status.PropertyChanged -= OnStatusPropertyChanged;
-        Settings.RuntimeRestartVerified -= OnRuntimeRestartVerified;
-        App.Localization.LanguageChanged -= OnLanguageChanged;
-        _api.Dispose();
-    }
+	public async Task InitializeAsync()
+	{
+		Authorization.TryLoad(out string _);
+		Status.InitializeEffectiveAuthorization(Authorization.EffectivePeerIds, Authorization.EffectiveStateKnown);
+		await Settings.LoadAsync().ConfigureAwait(continueOnCapturedContext: true);
+		SyncConfiguredAuthorization();
+		await Status.CheckDeploymentAsync().ConfigureAwait(continueOnCapturedContext: true);
+		await RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+		_timer.Start();
+	}
+
+	public async Task RefreshAsync()
+	{
+		if (_refreshing || _disposed)
+		{
+			return;
+		}
+		_refreshing = true;
+		try
+		{
+			await Status.RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+			await Authorization.RefreshOnlineStateAsync().ConfigureAwait(continueOnCapturedContext: true);
+			SyncConfiguredAuthorization();
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch
+		{
+		}
+		finally
+		{
+			_refreshing = false;
+		}
+	}
+
+	private async void OnTimerTick(object? sender, EventArgs e)
+	{
+		try
+		{
+			await RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+		}
+		catch
+		{
+		}
+	}
+
+	private async void RefreshAudit()
+	{
+		try
+		{
+			await Audit.RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+		}
+		catch
+		{
+		}
+	}
+
+	private void OnAuthorizationChanged(object? sender, AuthorizationChangedEventArgs e)
+	{
+		SyncConfiguredAuthorization();
+		if (e.RuntimeVerified)
+		{
+			Status.MarkAuthorizationEffective(Authorization.ConfiguredPeerIds);
+			Settings.MarkRuntimeApplied();
+		}
+	}
+
+	private void OnRuntimeRestartVerified(object? sender, EventArgs e)
+	{
+		if (Authorization.PendingRestart || !Authorization.EffectiveStateKnown)
+		{
+			Authorization.MarkRuntimeApplied();
+			Status.MarkAuthorizationEffective(Authorization.ConfiguredPeerIds);
+		}
+		Settings.MarkRuntimeApplied();
+	}
+
+	private void SyncConfiguredAuthorization()
+	{
+		Status.SetConfiguredAuthorization(Authorization.ConfiguredPeerIds, Authorization.PendingRestart);
+	}
+
+	private void OnLanguageChanged(object? sender, EventArgs e)
+	{
+		foreach (NavItem navItem in NavItems)
+		{
+			navItem.RefreshLanguage();
+		}
+		Status.RefreshLanguage();
+		Authorization.RefreshLanguage();
+		Audit.RefreshLanguage();
+		Settings.RefreshLanguage();
+		OnPropertyChanged("WindowTitle");
+		OnPropertyChanged("TrayBackgroundStatus");
+		RefreshLocalizedState();
+	}
+
+	private async void RefreshLocalizedState()
+	{
+		_ = 1;
+		try
+		{
+			await RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+			if (SelectedNav?.Page == Audit)
+			{
+				await Audit.RefreshAsync().ConfigureAwait(continueOnCapturedContext: true);
+			}
+		}
+		catch
+		{
+		}
+	}
+
+	private void OnStatusPropertyChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		if (e.PropertyName == "RunningText")
+		{
+			OnPropertyChanged("TrayBackgroundStatus");
+		}
+	}
+
+	public void Dispose()
+	{
+		if (!_disposed)
+		{
+			_disposed = true;
+			_timer.Stop();
+			_timer.Tick -= OnTimerTick;
+			Authorization.AuthorizationChanged -= OnAuthorizationChanged;
+			Status.RuntimeRestartVerified -= OnRuntimeRestartVerified;
+			Status.PropertyChanged -= OnStatusPropertyChanged;
+			Settings.RuntimeRestartVerified -= OnRuntimeRestartVerified;
+			App.Localization.LanguageChanged -= OnLanguageChanged;
+			_api.Dispose();
+		}
+	}
 }
